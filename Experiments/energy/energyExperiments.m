@@ -142,6 +142,7 @@ for m = ms, for n = ns, for f = facs, for s = seeds3
     sc = sprintf("Energy_Sweep_m%d_n%d", m, n);
     p = method("EA-SO", base(sc, T, s), st);
     p.StationPower = max(f * ceil(n / m) * PI, PI + 10);
+    p.Policy_initialWindowError = false;   % at and below the bound an initial window may hold no slot
     add("S6", sc, "EA-SO", s, sprintf("x%g", f), p);
 end, end, end, end
 % S7: charging methods with the circuit battery
@@ -172,7 +173,7 @@ kappas = [0 0.25 0.5 1 2 4];
 if opts.Quick, kappas = [0 1]; end
 sc = "Energy_Office_NoStation";
 for s = seeds5
-    p = base(sc, T, s); p.Policy = "ED-ORHC-SO"; p.Agent_profile = "SO";
+    p = robotLimits(base(sc, T, s)); p.Policy = "ED-ORHC-SO"; p.Agent_profile = "SO";
     add("S9", sc, "ED-ORHC-SO", s, "", p);
     for k = kappas
         p = base(sc, T, s); p.Policy = "Energy-Aware ED-RHC"; p.Policy_priceScale = 0;
@@ -212,6 +213,14 @@ switch m
     case "ED-ORHC-FO-3", p.Policy = "ED-ORHC-FO-3"; p.Agent_profile = "FO-3"; p.Agent_stopWhenEmpty = false;
     case "ED-ORHC-FO-3-bat", p.Policy = "ED-ORHC-FO-3"; p.Agent_profile = "FO-3";
 end
+if startsWith(m, "ED-ORHC"), p = robotLimits(p); end
+end
+
+function p = robotLimits(p)
+% ED-ORHC plans its profiles within the energy robots' limits (2 m/s, 1 m/s^2), as the other
+% methods do through the agents' limits (its own default is none, and an Abstract Agent keeps
+% any plan)
+p.Policy_speedLimit = 2; p.Policy_accelLimit = 1;
 end
 
 function P = idleDraw()

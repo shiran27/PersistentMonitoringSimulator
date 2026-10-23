@@ -128,6 +128,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         sessions = struct('agent', {}, 'station', {}, 'dock', {}, 'slot', {}, 'slotEnd', {}, 'arrive', {}, ...
             'start', {}, 'stop', {}, 'Ein', {}, 'Eout', {})   % one row per session
         windowMisses = 0               % bookings placed outside the agent's window (none expected)
+        initialWindowError = true      % no free slot in an initial window is an error (false: the earliest
+                                       % slot after it, counted in windowMisses; the station study's
+                                       % points at or below Lemma 4's bound)
         modeTime = zeros(0, 4)         % per agent: seconds monitoring, to a station, waiting, charging
         stats = struct()               % diagnostics: RHCPs solved, those whose energy or time row
                                        % binds at the optimum, "no affordable neighbor" events, and
@@ -610,7 +613,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 d = find(G(:, k + 1) == 0, 1);
                 if ~isempty(d), pick = [d, k]; break; end
             end
-            if isempty(pick) && initial
+            if isempty(pick) && initial && obj.initialWindowError
                 error('EnergyAwareEDRHCPolicy:NoSlot', ['No free slot at station %d in agent %d''s ' ...
                     'initial window [%.0f, %.0f] s: check Lemma 4 (P_c >= ceil(n/m) P_I) and the batteries'], ...
                     s, agent.index, e, l);

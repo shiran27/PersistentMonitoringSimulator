@@ -87,10 +87,10 @@ for sc = setups'
         name = ""; if first, name = setupName(sc); first = false; end
         fprintf(fid, '%s & %s & %.0f [%.0f, %.0f] & %.0f & %.0f & %.1f & %.0f & %.0f \\\\\n', name, heads(k), ...
             J, lo, hi, E, soc, ch, wt, sh);
-        mac(end+1) = macro("J" + camel(methods(k)) + camel(sc), J, '%.0f'); %#ok<AGROW>
-        mac(end+1) = macro("Share" + camel(methods(k)) + camel(sc), sh, '%.0f'); %#ok<AGROW>
-        mac(end+1) = macro("Energy" + camel(methods(k)) + camel(sc), E, '%.0f'); %#ok<AGROW>
-        mac(end+1) = macro("MinSoc" + camel(methods(k)) + camel(sc), soc, '%.0f'); %#ok<AGROW>
+        mac(end+1, 1) = macro("J" + camel(methods(k)) + camel(sc), J, '%.0f'); %#ok<AGROW>
+        mac(end+1, 1) = macro("Share" + camel(methods(k)) + camel(sc), sh, '%.0f'); %#ok<AGROW>
+        mac(end+1, 1) = macro("Energy" + camel(methods(k)) + camel(sc), E, '%.0f'); %#ok<AGROW>
+        mac(end+1, 1) = macro("MinSoc" + camel(methods(k)) + camel(sc), soc, '%.0f'); %#ok<AGROW>
     end
     fprintf(fid, '\\hline\n');
 end
@@ -174,7 +174,7 @@ for q = 1:size(rows, 1)
             cells(end+1) = sprintf('%.3f', mean(R.Messages(m) ./ R.RHCPs(m), 'omitnan')); %#ok<AGROW>
         end
         lbl = regexprep(replace(rows{q, 1}, ["0.5", "1", "2", "5"], [" Half ", " One ", " Two ", " Five "]), '[^A-Za-z ]', '');
-        mac(end+1) = macro(key + "J" + camel(lbl) + camel(sc), J, '%.0f'); %#ok<AGROW>
+        mac(end+1, 1) = macro(key + "J" + camel(lbl) + camel(sc), J, '%.0f'); %#ok<AGROW>
     end
     fprintf(fid, '%s & %s \\\\ \\hline\n', rows{q, 1}, strjoin(cells, ' & '));
 end
@@ -236,8 +236,8 @@ for m = 1:2
     if m == 2, legend('Interpreter', 'latex', 'Location', 'southeast', 'FontSize', 7); end
 end
 saveFig(f, fullfile(resDir, 'fig_stations'));
-mac(end+1) = macro("StationRunsHeld", held, '%d');
-mac(end+1) = macro("StationRunsOut", bad, '%d');
+mac(end+1, 1) = macro("StationRunsHeld", held, '%d');
+mac(end+1, 1) = macro("StationRunsOut", bad, '%d');
 end
 
 function f = mvaShare(n, m, Z, S)
@@ -293,11 +293,11 @@ for k = 1:3
     set(gca, 'FontSize', 8, 'TickLabelInterpreter', 'latex');
 end
 saveFig(f, fullfile(resDir, 'fig_errors'));
-s = sort(arr); mac(end+1) = macro("ArrivalErrNinetyNine", s(max(1, ceil(0.99 * end))), '%.2f');
-mac(end+1) = macro("ArrivalErrMax", max(arr), '%.2f');
-s = sort(en); mac(end+1) = macro("EnergyErrNinetyNine", s(max(1, ceil(0.99 * end))), '%.1f');
-mac(end+1) = macro("EnergyErrMax", max(en), '%.1f');
-mac(end+1) = macro("SocErrMax", 100 * max(soc), '%.2f');
+s = sort(arr); mac(end+1, 1) = macro("ArrivalErrNinetyNine", s(max(1, ceil(0.99 * end))), '%.2f');
+mac(end+1, 1) = macro("ArrivalErrMax", max(arr), '%.2f');
+s = sort(en); mac(end+1, 1) = macro("EnergyErrNinetyNine", s(max(1, ceil(0.99 * end))), '%.1f');
+mac(end+1, 1) = macro("EnergyErrMax", max(en), '%.1f');
+mac(end+1, 1) = macro("SocErrMax", 100 * max(soc), '%.2f');
 % table
 S8 = T(T.Study == "S8", :); A = T(T.Study == "S2" & T.Method == "EA-SO" & T.Seed <= 5, :);
 setups = unique(S8.Scenario, 'stable');
@@ -312,9 +312,9 @@ for sc = setups'
     fprintf(fid, '%s & %.0f & %.0f & %.1f & %d & %.0f & %.1f & %d \\\\ \\hline\n', setupName(sc), a, ...
         stat(S8, n0, 'J'), 100 * min(S8.TrueMinSoc(n0)), sum(S8.Violations(n0), 'omitnan'), ...
         stat(S8, n1, 'J'), 100 * min(S8.TrueMinSoc(n1)), sum(S8.Violations(n1), 'omitnan'));
-    mac(end+1) = macro("PhysJ" + camel(sc), stat(S8, n1, 'J'), '%.0f'); %#ok<AGROW>
-    mac(end+1) = macro("PhysViolationsNoMargin" + camel(sc), sum(S8.Violations(n0), 'omitnan'), '%d'); %#ok<AGROW>
-    mac(end+1) = macro("PhysViolationsMargin" + camel(sc), sum(S8.Violations(n1), 'omitnan'), '%d'); %#ok<AGROW>
+    mac(end+1, 1) = macro("PhysJ" + camel(sc), stat(S8, n1, 'J'), '%.0f'); %#ok<AGROW>
+    mac(end+1, 1) = macro("PhysViolationsNoMargin" + camel(sc), sum(S8.Violations(n0), 'omitnan'), '%d'); %#ok<AGROW>
+    mac(end+1, 1) = macro("PhysViolationsMargin" + camel(sc), sum(S8.Violations(n1), 'omitnan'), '%d'); %#ok<AGROW>
 end
 fprintf(fid, '\\end{tabular}\n');
 fclose(fid);
@@ -383,11 +383,11 @@ for q = 1:3
     if ~isempty(O)
         fprintf(fid, '%s & ED-ORHC-SO & %.0f & %.0f & %.1f & %.0f \\\\ \\hline\n', crit(q), mean([O.J]), mean([O.t]), ...
             mean([O.E]), mean([O.V]));
-        mac(end+1) = macro("StopJOrhc" + camel(crit(q)), mean([O.J]), '%.0f'); %#ok<AGROW>
+        mac(end+1, 1) = macro("StopJOrhc" + camel(crit(q)), mean([O.J]), '%.0f'); %#ok<AGROW>
     end
     [Jbest, kb] = min(Jk);
-    mac(end+1) = macro("StopBestKappa" + camel(crit(q)), ks(kb), '%g'); %#ok<AGROW>
-    mac(end+1) = macro("StopBestJ" + camel(crit(q)), Jbest, '%.0f'); %#ok<AGROW>
+    mac(end+1, 1) = macro("StopBestKappa" + camel(crit(q)), ks(kb), '%g'); %#ok<AGROW>
+    mac(end+1, 1) = macro("StopBestJ" + camel(crit(q)), Jbest, '%.0f'); %#ok<AGROW>
 end
 fprintf(fid, '\\end{tabular}\n');
 fclose(fid);
