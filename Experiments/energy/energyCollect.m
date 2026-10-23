@@ -17,7 +17,7 @@ T = cell2table(rows, 'VariableNames', {'Id', 'Study', 'Scenario', 'Method', 'See
     'Energy', 'MinSoc', 'Charges', 'Wait', 'Share', 'Gap', 'Messages', 'Relays', 'RHCPs', 'Changes', ...
     'Busy', 'TrueMinSoc', 'Violations', 'Delays', 'SocErrMax', 'Seconds'});
 writetable(T, fullfile(resDir, 'runs.csv'));
-mac = setupMacros();
+mac = [setupMacros(); profileMacros()];
 mac = [mac; tableMain(T, resDir)];
 mac = [mac; tableAblations(T, resDir)];
 mac = [mac; stationsFigure(L, runDir, resDir)];
@@ -98,6 +98,29 @@ for f = ["Energy_Office_1Dock", "Energy_Campus_2Stations"]
         mac(end+1, 1) = macro("BatteryVoc", b.Voc, '%g');
     end
 end
+end
+
+function mac = profileMacros()
+% S1's numbers (Sec. VII-B), as in fig_profiles: y = 20 m, (c1, c2) = (17.75, 1.16), no limits.
+% The excess of the cubic (the c2 = 0 optimum) and of FO-3 over the SO loss at rho = 10 and 40 s
+% (%), FO-3's tau*/rho there, the transit time rho_E minimizing Delta P rho + L_SO(rho) with
+% Delta P = P_M - P_I (the robots' powers without battery losses), y/rho_E, and sqrt(Delta P/c2)
+c1 = 17.75; c2 = 1.16; nu = sqrt(c2 / c1); y = 20;
+b = Battery(CapacityWh=9); dP = b.movePower() - b.idlePower();
+Lso = @(r) SpeedProfile.loss("SO", y, r, Inf, Inf, c1, c2);
+mac = strings(0, 1);
+for r = [10 40]
+    tag = "Ten"; if r == 40, tag = "Forty"; end
+    [Eu, Ev] = SpeedProfile.integrals(SpeedProfile.shape("SO", y, r));
+    mac(end+1, 1) = macro("ProfCubGap" + tag, 100 * ((c1 * Eu + c2 * Ev) / Lso(r) - 1), '%.1f');
+    mac(end+1, 1) = macro("ProfFoThreeGap" + tag, 100 * (SpeedProfile.loss("FO-3", y, r, Inf, Inf, c1, c2) / Lso(r) - 1), '%.1f');
+    P = SpeedProfile.shape("FO-3", y, r, Inf, Inf, nu);
+    mac(end+1, 1) = macro("ProfTau" + tag, P.s / r, '%.3f');
+end
+rhoE = fminbnd(@(r) dP * r + Lso(r), 1, 500, optimset('TolX', 1e-8));
+mac(end+1, 1) = macro("ProfRhoE", rhoE, '%.1f');
+mac(end+1, 1) = macro("ProfSpeedE", y / rhoE, '%.2f');
+mac(end+1, 1) = macro("ProfSpeedLimitE", sqrt(dP / c2), '%.2f');
 end
 
 function mac = tableMain(T, resDir)
