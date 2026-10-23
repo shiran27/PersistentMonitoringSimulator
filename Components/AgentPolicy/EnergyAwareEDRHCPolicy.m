@@ -113,6 +113,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         fillIn = true                  % an agent waiting at its station charges on any idle dock until
                                        % the next slot booked there, then books again
         minFill = 10                   % shortest fill-in worth starting [s]
+        d2FillIn = false               % D2, when no earlier slot is free: go now if the station's dock will
+                                       % be idle on arrival for at least t_s/4 before the next booked start
         stationExit = true             % from a station with every neighbor covered, head for the nearest
                                        % uncovered target through covered ones
         reportDeadband = 0             % "R": re-report only when g_need moved by more than this many slots
@@ -435,6 +437,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 full = agent.battery.soc >= 0.99;   % nothing to charge: no earlier slot to ask for
                 if (~full && obj.requestEarlier(agent, model, i, simTime)) || simTime >= latest - 1e-9
                     cmd = obj.goStation(agent, model, i, simTime);
+                elseif obj.d2FillIn && ~full && obj.gapOnArrival(model, agent, i, simTime)
+                    obj.stats.d2Fills = obj.stats.d2Fills + 1;   % go now and fill in a dock gap
+                    cmd = obj.goStation(agent, model, i, simTime);
                 else
                     cmd = struct();
                     obj.wantsEarlier(agent.index) = true;   % first in line for freed time
@@ -518,7 +523,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 'plans', 0, 'planMean', 0, 'muEMean', 0, ...         % committed plans: mean length, mean hhat_E price
                 'tails', 0, 'preempted', 0, ...                      % tail slots taken and yielded
                 'fillIns', 0, 'exits', 0, ...                        % fill-in sessions; exits from stations
-                'd2Dwells', 0, 'd2Time', 0, ...                      % dwells to the latest departure: count, planned s
+                'd2Dwells', 0, 'd2Time', 0, 'd2Fills', 0, ...        % dwells to the latest departure: count, planned s; D2 fill-ins
                 'bookingChanges', 0, ...                            % bookings made, moved and released
                 'messages', 0, 'relays', 0);                        % end-to-end messages; their relay hops
             obj.rows = containers.Map('KeyType', 'double', 'ValueType', 'any');
@@ -1375,6 +1380,24 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.sessions(end+1) = struct('agent', agent.index, 'station', s, 'dock', d, 'slot', b.start, ...
                 'slotEnd', stop, 'arrive', b.arrive, 'start', t, 'stop', NaN, 'Ein', bat.remaining, 'Eout', NaN);
             obj.stats.fillIns = obj.stats.fillIns + 1;
+        end
+
+        function tf = gapOnArrival(obj, model, agent, i, t)
+            % D2's fill-in: will a dock of the agent's station be idle when it arrives from i, for at
+            % least t_s/4 before the next start booked on it?
+            tf = false;
+            b = obj.bookings(agent.index); s = b.station; G = obj.grids(s); len = b.length;
+            ta = t + obj.routes.T(i, obj.stationColumn(s)) + obj.messageDelay + obj.marginT;
+            k = max(floor(ta / len + 1e-9), 0);
+            if k + 1 > size(G, 2), return; end
+            for d = 1:size(G, 1)
+                row = G(d, k + 1:end);
+                other = row ~= 0 & row ~= agent.index;
+                if other(1), continue; end
+                n = find(other, 1);
+                if isempty(n), next = Inf; else, next = (k + n - 1) * len; end
+                if next - ta >= len / 4, tf = true; return; end   % sessions and claims hold their cells
+            end
         end
 
         function tf = atStationAllCovered(obj, agent, model, adj, i)
