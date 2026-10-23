@@ -5,9 +5,9 @@ function energyPolicyTest()
 %
 % 1. Special cases: without stations, with terminal "none", omega = 0 and the ratio form, it
 %    makes ED-RHC's decisions (alpha = 0.5); the Dinkelbach form gives the ratio form's plans.
-% 2. Safety on the energy setups: no battery goes below the reserve E_min = socMin Q; no
-%    station charges more agents than it has docks; every session starts at its slot (never
-%    before) and its agent arrived by then; every booking lay in its agent's window.
+% 2. Safety on the energy setups: no battery goes below the reserve E_min = socMin Q; no two
+%    sessions overlap on a dock; every agent arrived by its slot and every session ended by its
+%    slot's end (early starts on idle docks allowed); every booking lay in its agent's window.
 % 3. Bookings are released at the end of the mission; time in the modes adds up to T.
 % 4. runTrial 'AgentSettings', "layout" keeps the layout's power model; stations charge only
 %    agents with chargeAllowed.
@@ -48,19 +48,18 @@ for setup = ["Energy_Office_1Dock", "Energy_Office_2Docks", "Energy_Campus_2Stat
     minSoc = min(out.log.soc(:));
     ok = minSoc >= pol.socMin - 1e-3 && pol.windowMisses == 0 && pol.charges > 0;
     st = [S.start]; sp = [S.stop]; sp(isnan(sp)) = q.EndTime;
-    maxAtOnce = 0;
-    for s = unique([S.station])
-        k = find([S.station] == s);
-        m = lay.s.chargerDocks(lay.s.chargers == s);
+    maxAtOnce = 0;                       % sessions at once on one dock
+    for sd = unique([[S.station]; [S.dock]]', 'rows')'
+        k = find([S.station] == sd(1) & [S.dock] == sd(2));
         for i = k
-            maxAtOnce = max(maxAtOnce, sum(st(k) <= st(i) + 1e-9 & sp(k) > st(i) + 1e-9) / m);
+            maxAtOnce = max(maxAtOnce, sum(st(k) <= st(i) + 1e-9 & sp(k) > st(i) + 1e-9));
         end
     end
-    onTime = all([S.start] >= [S.slot] - 1e-6) && all([S.arrive] <= [S.slot] + 1e-6 | isnan([S.arrive]));
+    onTime = all([S.arrive] <= [S.slot] + 1e-6 | isnan([S.arrive])) && all(sp <= [S.slotEnd] + 0.2);
     modes = sum(pol.modeTime, 2);
     lateBy = max([[S.arrive] - [S.slot], 0], [], 'omitnan');
     check(ok && maxAtOnce <= 1 && onTime && all(abs(modes - q.EndTime) < 1), sprintf(['%s: lowest SOC %.2f%% ' ...
-        '(reserve %.0f%%), %d sessions, at most %g agents per dock, arrivals at most %.3f s after the slot, ' ...
+        '(reserve %.0f%%), %d sessions, at most %g at once per dock, arrivals at most %.3f s after the slot, ' ...
         'modes add up to %s s (T = %g)'], setup, 100 * minSoc, 100 * pol.socMin, numel(S), maxAtOnce, lateBy, ...
         mat2str(round(modes', 2)), q.EndTime));
     % release at the end: no booking left that the agent could not have needed

@@ -24,9 +24,10 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
     %    mission end T, t_f <= T.
     % 3. Charging (Secs. 6.2, 6.8). An agent leaves for its station when no uncovered neighbor
     %    is affordable or at its latest departure, follows the least-energy route without
-    %    covering targets, waits there until t_a (not charging), charges for the slot (or until
-    %    full), and books its next slot. Once its energy covers idling until T it releases its
-    %    booking. Slots of length t_s = (Q - E_min)/(P_c - P_I) start at k t_s on every dock;
+    %    covering targets, waits there until t_a (not charging; with earlyStart it starts as soon
+    %    as its dock is idle and no other booking on it comes first), charges until full or the end
+    %    of its slot, and books its next slot. Once its energy covers its mean power until T it releases
+    %    its booking. Slots of length t_s = (Q - E_min)/(P_c - P_I) start at k t_s on every dock;
     %    bookingStrategy "a" (default) takes the latest free slot before the agent's predicted
     %    need (its energy at its mean power since its last charge), "b" the latest free slot in
     %    its window [e_a, l_a] (which leaves it no energy beyond idling). An agent that heads to
@@ -53,13 +54,26 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                                        % plan, so (1 + route hops) times both join the margins
         stepEnergy = 5                 % per transit and second of step [J/s]: twice the 2.3 J/s
                                        % measured on the energy setups
+        priceScale = 1                 % multiplies hhat_E's price mu_a (0: energy unpriced by hhat_E)
+        priceForm = "renewal"          % hhat_E's slope mu_a/(P_c - P_I + Pbar_a) ("renewal", default:
+                                       % the slope of the renewal model's value of stored energy;
+                                       % Pbar_a the agent's mean power since its last charge) or
+                                       % mu_a/(P_c - P_I) ("charging")
+        priceAveraging = false         % true: mu_a is the running mean of the agent's values at its
+                                       % events, instead of the value at this event
+        earlyStart = true              % work-conserving docks: a booked agent at its station starts
+                                       % charging as soon as its dock is idle and no other booking on
+                                       % it comes first (its session still ends by its own slot's end)
         dinkelbachTol = 1e-6           % relative tolerance of Dinkelbach's iteration
         dinkelbachIterations = 20
         charges = 0                    % charging sessions so far
-        sessions = struct('agent', {}, 'station', {}, 'dock', {}, 'slot', {}, 'arrive', {}, ...
+        sessions = struct('agent', {}, 'station', {}, 'dock', {}, 'slot', {}, 'slotEnd', {}, 'arrive', {}, ...
             'start', {}, 'stop', {}, 'Ein', {}, 'Eout', {})   % one row per session
         windowMisses = 0               % bookings placed outside the agent's window (none expected)
         modeTime = zeros(0, 4)         % per agent: seconds monitoring, to a station, waiting, charging
+        stats = struct()               % diagnostics: RHCPs solved, those whose energy or time row
+                                       % binds at the optimum, "no affordable neighbor" events, and
+                                       % the planned transits [rho, rho_min]
         traceEvents = false            % record events in trace
         trace = zeros(0, 6)            % [time, agent, event, node, energy left, booked slot start];
                                        % events: 1 plan, 2 go to station, 3 dwell to latest departure,
@@ -84,6 +98,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         gapSum, gapCount, lastLeft, gapInit   % per target: unattended-time history
         initialized = false
         marginT = 0, marginE = 0       % margins in use: the given ones plus the step's
+        rows                           % neighbor j -> its row limits in the solve in progress
+        muMean                         % agent index -> [running mean of mu_a, number of events]
     end
 
     methods
@@ -133,6 +149,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 obj.modeTime(agent.index, k) = obj.modeTime(agent.index, k) + simTime - obj.lastStep(agent.index);
             end
             obj.lastStep(agent.index) = simTime;
+            if obj.modeOf(agent) == "waiting" && obj.earlyStart
+                obj.tryEarlyStart(agent, model, simTime);
+            end
             if obj.modeOf(agent) == "monitor"
                 onStep@EDRHCPolicy(obj, agent, model, simTime);
             end
@@ -144,8 +163,11 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             if nargin < 7, adj = model.buildAdjacency(); end
             obj.ensureInit(model, simTime);
             obj.prepareHood(agent, model, adj, i, simTime);
+            obj.rows = containers.Map('KeyType', 'double', 'ValueType', 'any');
             if obj.objectiveForm ~= "dinkelbach"
                 best = rhcp@EDRHCPolicy(obj, kind, agent, model, i, simTime, adj);
+                obj.noteBinding(best);
+                obj.noteNone(best, kind, agent, model, adj, i);
                 return;
             end
             lam = 0;
@@ -161,6 +183,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 if done, break; end
             end
             obj.lambdas(agent.index) = lam;
+            obj.noteBinding(best);
+            obj.noteNone(best, kind, agent, model, adj, i);
         end
 
         function m = modeOf(obj, agent)
@@ -201,6 +225,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             if ~any(ok), rr = []; return; end
             k = find(ok);
             rr = [r(k(1)), r(k(end))];
+            obj.rows(j) = struct('lo', lo, 'hi', hi, 'rho', rr, 'limJ', Inf, 'limI', Inf);
         end
 
         function [a, b] = planConstraint(obj, agent, model, i, j, d, rhoRange) %#ok<INUSD>
@@ -221,6 +246,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 % and the station stays reachable from i after the dwell there (route times are
                 % along least-energy routes, so T(i) <= rho_ij + T(j) need not hold)
                 a = [1 1 0 0 0]; b = slack - obj.routes.T(i, col);
+                if isKey(obj.rows, j)
+                    rw = obj.rows(j); rw.limJ = lim; rw.limI = b; obj.rows(j) = rw;
+                end
             end
             if isfinite(lim), a = [a; ones(1, 5)]; b = [b; lim]; end
         end
@@ -260,6 +288,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 % Uncovered neighbors, none affordable: go now if an earlier free slot can be
                 % reached, else keep servicing i until the latest departure (idling here costs what
                 % waiting there does). With every neighbor covered, ED-RHC's hold and retry applies
+                obj.stats.noAffordable = obj.stats.noAffordable + 1;
                 b = obj.bookings(agent.index);
                 latest = b.start - obj.routes.T(i, obj.stationColumn(b.station)) - obj.messageDelay - obj.marginT;
                 if obj.rebookEarlier(agent, model, i, simTime) || simTime >= latest - 1e-9
@@ -275,6 +304,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             if isfield(cmd, 'targetIdx') && obj.transit ~= "FO-0" && isprop(agent, 'transitLimits')
                 pts = model.findEdge(i, cmd.targetIdx).curvePoints;
                 agent.transitLimits = [agent.segmentSpeedLimit(pts), agent.state.maxAccel];
+                obj.stats.transits(end+1, :) = [agent.transitTime, agent.limitTransit(pts)];
             end
             if isfield(cmd, 'targetIdx')
                 obj.noteDeparture(agent, model, i, simTime);
@@ -306,6 +336,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.lastNode = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.lastCharge = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.lastStep = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.muMean = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.modeTime = zeros(0, 4);
             obj.homes = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.grids = containers.Map('KeyType', 'double', 'ValueType', 'any');
@@ -313,6 +344,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.routes = [];
             obj.marginT = obj.marginTime; obj.marginE = obj.marginEnergy;
             obj.charges = 0; obj.windowMisses = 0;
+            obj.stats = struct('rhcp', 0, 'energyBinds', 0, 'timeBinds', 0, 'noAffordable', 0, ...
+                'transits', zeros(0, 2), 'none', zeros(1, 5));   % none: covered, energy, time, cost, kind 1-2
+            obj.rows = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.sessions = obj.sessions([]);
             obj.initialized = false;
         end
@@ -381,12 +415,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             if kHi + 1 > size(G, 2), G(:, end+1:kHi + 1) = 0; end
             ks = kHi:-1:kLo;                    % "b": the latest first
             if obj.bookingStrategy == "a"       % "a": nearest the need at the mean power since the last charge
-                Pbar = bat.idleDraw() + 0.5 * (bat.movePower() - bat.idlePower() + bat.c3 * agent.state.maxSpeed);
-                if isKey(obj.lastCharge, agent.index)
-                    lc = obj.lastCharge(agent.index);
-                    if t - lc(1) > 60, Pbar = max(bat.idleDraw(), (lc(2) - bat.remaining) / (t - lc(1))); end
-                end
-                need = t + (bat.remaining - obj.socMin * bat.capacity - obj.routes.D(i, col)) / Pbar;
+                need = t + (bat.remaining - obj.socMin * bat.capacity - obj.routes.D(i, col)) / obj.meanPower(agent, t);
                 [~, order] = sort(abs(ks * ts - need));
                 ks = ks(order);
             end
@@ -523,7 +552,16 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             if ~isempty(bk)
                 col = obj.stationColumn(bk.station);
                 Di = obj.routes.D(i, col);
-                muE = mu / (model.targets(bk.station).chargePower - agent.battery.idleDraw());
+                rate = model.targets(bk.station).chargePower - agent.battery.idleDraw();
+                if obj.priceForm == "renewal", rate = rate + obj.meanPower(agent, simTime); end
+                if obj.priceAveraging   % running mean of mu_a over the agent's events
+                    m = [0 0];
+                    if isKey(obj.muMean, agent.index), m = obj.muMean(agent.index); end
+                    m = [(m(1) * m(2) + mu) / (m(2) + 1), m(2) + 1];
+                    obj.muMean(agent.index) = m;
+                    mu = m(1);
+                end
+                muE = obj.priceScale * mu / rate;
             end
             obj.hood = struct('t', simTime, 'nodes', hd, 'gap', gap, 'c', c, 'lam', lam, ...
                 'h0', h0, 'mu', mu, 'muE', muE, 'Di', Di);
@@ -544,6 +582,67 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             hf = CollabTargetCost.terminal(Rf, repmat(d.A, size(Rf, 1), 1), repmat(h.c, size(Rf, 1), 1), ...
                 repmat(h.gap, size(Rf, 1), 1), repmat(s, 1, K), repmat(h.lam, size(Rf, 1), 1));
             dh = sum(hf, 2, 'omitnan') - h.h0;
+        end
+
+        function tryEarlyStart(obj, agent, model, t)
+            % Work-conserving docks: start the booked session now if nobody charges on the
+            % agent's dock and no other booking on it lies between now and the agent's slot (the
+            % session ends by the agent's own slot's end, so it overlaps no other)
+            b = obj.bookings(agent.index);
+            G = obj.grids(b.station);
+            kNow = max(floor(t / b.length + 1e-9), 0);
+            cells = G(b.dock, kNow + 1:b.slot + 1);
+            if any(cells ~= 0 & cells ~= agent.index), return; end
+            for o = model.agents(:)'
+                if o.index ~= agent.index && obj.modeOf(o) == "charging" && isKey(obj.bookings, o.index)
+                    ob = obj.bookings(o.index);
+                    if ob.station == b.station && ob.dock == b.dock, return; end
+                end
+            end
+            obj.startCharging(agent, model, b.station, t);
+        end
+
+        function noteBinding(obj, best)
+            % Diagnostics: does the optimum sit on the energy row (rho at an end of its interval
+            % that the row, not Lemma 1 or H, sets) or on a time row (w or u_i + v_i at its limit)?
+            obj.stats.rhcp = obj.stats.rhcp + 1;
+            if isempty(best.j) || ~isKey(obj.rows, best.j), return; end
+            rw = obj.rows(best.j); tol = 1e-3;
+            w = sum(best.x) + best.rho;
+            if (rw.rho(1) > rw.lo * (1 + tol) && best.rho <= rw.rho(1) * (1 + tol)) || ...
+                    (rw.rho(2) < rw.hi * (1 - tol) && best.rho >= rw.rho(2) * (1 - tol))
+                obj.stats.energyBinds = obj.stats.energyBinds + 1;
+            end
+            if w >= rw.limJ - tol * max(1, rw.limJ) || sum(best.x(1:2)) >= rw.limI - tol * max(1, rw.limI)
+                obj.stats.timeBinds = obj.stats.timeBinds + 1;
+            end
+        end
+
+        function noteNone(obj, best, kind, agent, model, adj, i)
+            % Diagnostics: why an RHCP found no next target (stats.none: every neighbor covered;
+            % an uncovered one excluded by the energy row; by a time row; by its cost (none finite);
+            % RHCP1 or RHCP2)
+            if ~isempty(best.j), return; end
+            if kind < 3, obj.stats.none(5) = obj.stats.none(5) + 1; return; end
+            nbrs = find(adj(i, :));
+            nbrs = nbrs(~obj.coveredNeighbors(agent, model, adj, i));
+            nbrs = nbrs(~arrayfun(@(j) isa(model.targets(j), 'ChargingStation'), nbrs));
+            if isempty(nbrs), c = 1;
+            elseif ~any(arrayfun(@(j) isKey(obj.rows, j), nbrs)), c = 2;
+            elseif all(arrayfun(@(j) ~isKey(obj.rows, j) || obj.rows(j).limJ < obj.rows(j).rho(1) || obj.rows(j).limI < 0, nbrs)), c = 3;
+            else, c = 4;
+            end
+            obj.stats.none(c) = obj.stats.none(c) + 1;
+        end
+
+        function P = meanPower(obj, agent, t)
+            % The agent's mean power since its last charge (an estimate before 60 s of data)
+            bat = agent.battery;
+            P = bat.idleDraw() + 0.5 * (bat.movePower() - bat.idlePower() + bat.c3 * agent.state.maxSpeed);
+            if isKey(obj.lastCharge, agent.index)
+                lc = obj.lastCharge(agent.index);
+                if t - lc(1) > 60, P = max(bat.idleDraw(), (lc(2) - bat.remaining) / (t - lc(1))); end
+            end
         end
 
         function note(obj, event, agent, i, t)
@@ -578,10 +677,13 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
 
         function maybeRelease(obj, agent, t)
             % End of the mission: release the booking once the energy left covers idling until T
+            % plus the excess still to come (Sec. 6.8), estimated at the agent's mean power since
+            % its last charge; covering idling alone would leave it no energy to move
             bk = obj.activeBooking(agent);
             if isempty(bk) || ~isfinite(obj.missionEnd), return; end
             bat = agent.battery;
-            if bat.remaining - obj.socMin * bat.capacity - obj.marginE >= bat.idleDraw() * (obj.missionEnd - t)
+            if bat.remaining - obj.socMin * bat.capacity - obj.marginE >= ...
+                    max(obj.meanPower(agent, t), bat.idleDraw()) * (obj.missionEnd - t)
                 obj.unbook(agent);
                 obj.released(agent.index) = true;
                 obj.note(7, agent, NaN, t);
@@ -666,7 +768,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             toFull = agent.battery.energyUsed / max(st.chargePower - agent.battery.idleDraw(), eps);
             agent.dwellRemaining = max(min(b.start + b.length - t, toFull), 1e-3);
             obj.sessions(end+1) = struct('agent', agent.index, 'station', i, 'dock', b.dock, ...
-                'slot', b.start, 'arrive', b.arrive, 'start', t, 'stop', NaN, ...
+                'slot', b.start, 'slotEnd', b.start + b.length, 'arrive', b.arrive, 'start', t, 'stop', NaN, ...
                 'Ein', agent.battery.remaining, 'Eout', NaN);
         end
 

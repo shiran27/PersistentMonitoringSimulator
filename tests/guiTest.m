@@ -19,6 +19,7 @@ classdef guiTest < matlab.uitest.TestCase
             rng(0);
             tc.ui = MainUI('Monitor', MainUI.secondaryMonitor());
             tc.addTeardown(@() closeUI(tc.ui));
+            waitForLayout(tc.ui);
         end
     end
 
@@ -254,6 +255,21 @@ classdef guiTest < matlab.uitest.TestCase
             exportapp(tc.ui.objectiveWin.fig, fullfile(tc.outDir, [name '_objective.png']));
         end
     end
+end
+
+function waitForLayout(ui)
+% Clicks on the canvas land where its laid-out position says. A new window lays out its grid
+% asynchronously (slowly after a long test), and until then the axes keep a default 400 x 300
+% px size, so wait until their size has settled
+drawnow;
+last = [];
+t0 = tic;
+while toc(t0) < 10
+    p = getpixelposition(ui.ax, true);
+    if isequal(p, last) && p(3) > 400, break; end
+    last = p;
+    pause(0.1); drawnow;
+end
 end
 
 function closeUI(ui)

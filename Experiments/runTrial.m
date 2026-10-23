@@ -54,6 +54,19 @@ if string(p.TargetRates) == "layout"
 else
     assert(string(p.TargetRates) == "params", 'runTrial:TargetRates', 'TargetRates must be "params" or "layout"');
 end
+% InitialR (optional): R_i(0) for every target, as a vector, or a number Rmax that draws each
+% from U[0, Rmax] with its own stream seeded by Seed (the same draws in serial and in parfor)
+if isfield(p, 'InitialR') && ~isempty(p.InitialR)
+    R0 = p.InitialR;
+    if isscalar(R0)
+        rs = RandStream('mt19937ar', 'Seed', max(p.Seed, 0));
+        R0 = R0 * rand(rs, 1, numel(model.targets));
+    end
+    assert(numel(R0) == numel(model.targets), 'runTrial:InitialR', 'InitialR needs one value per target or one Rmax');
+    for k = 1:numel(model.targets)
+        if ~isa(model.targets(k), 'ChargingStation'), model.targets(k).setRates([], [], R0(k)); end
+    end
+end
 
 starts = parseStarts(p.AgentStarts, stored);
 if keepAgents
