@@ -56,7 +56,7 @@ classdef RouteTable < handle
             % utilization; ok: Lemma 4's condition P_c >= ceil(n_sigma/m_sigma) P_I. Pbar is
             % the agents' mean power away from a station (default P_I; it scales util only)
             N = numel(starts); S = numel(obj.stations);
-            PI = agent.battery.idlePower();
+            PI = agent.battery.idleDraw();   % idle power drawn from the battery, losses included
             if nargin < 5, Pbar = PI; end
             m = arrayfun(@(s) model.targets(s).docks, obj.stations);
             m(~isfinite(m)) = N;

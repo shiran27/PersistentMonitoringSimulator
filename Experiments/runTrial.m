@@ -33,7 +33,14 @@ model.importLayout(tmp.s);
 if isfield(p, 'Metrics') && ~isempty(p.Metrics), model.setMetrics(p.Metrics); end
 model.detectionRadius = p.DetectionRadius;
 stored = arrayfun(@(a) a.initialTargetIdx, model.agents);   % start targets saved in the layout
-model.agents = [];   % trial parameters place the agents ("layout" reuses the stored starts)
+% AgentSettings: "params" (default) places new agents from the trial parameters ("layout"
+% starts reuse the stored start targets); "layout" keeps the layout's agents with their stored
+% settings (speed, limits, profile, battery and power model), and only Agent_<setting>
+% parameters given explicitly change them
+keepAgents = string(p.AgentSettings) == "layout";
+assert(keepAgents || string(p.AgentSettings) == "params", 'runTrial:AgentSettings', ...
+    'AgentSettings must be "params" or "layout"');
+if ~keepAgents, model.agents = []; end
 % TargetRates: "params" (default) gives every target A_base and B; "layout" keeps the layout file's
 % per-target A, B and R(0) (e.g. targets that only a group of agents can clear, A_i > B_i)
 layoutRates = [arrayfun(@(t) t.A_uniformBase, model.targets); [model.targets.B]; [model.targets.initialR]];
@@ -49,6 +56,10 @@ else
 end
 
 starts = parseStarts(p.AgentStarts, stored);
+if keepAgents
+    assert(~isempty(model.agents), 'runTrial:AgentSettings', 'AgentSettings "layout": %s stores no agents', char(p.Layout));
+    starts = stored;
+end
 if ~isempty(starts), p.NumAgents = numel(starts); end
 % ponytail: Joint RHC's pairwise planner is only designed for two agents; lift this when it scales
 assert(p.Policy ~= "Joint RHC" || p.NumAgents == 2, ...
@@ -70,8 +81,20 @@ for i = 1:numel(f)
     end
 end
 model.agentSpec = spec;
-for k = 1:p.NumAgents
-    model.addAgentOnTarget(model.targets(starts(k)).position, spec.maxSpeed, 1e-6);
+if keepAgents
+    for a = model.agents   % the layout's settings, with the explicit Agent_<setting> on top
+        own = AgentSpec.of(a, string(p.AgentType));
+        for i = 1:numel(f)
+            if startsWith(f{i}, 'Agent_') && ismember(extractAfter(f{i}, 'Agent_'), AgentSpec.settings)
+                own.(extractAfter(f{i}, 'Agent_')) = p.(f{i});
+            end
+        end
+        own.applyTo(a);
+    end
+else
+    for k = 1:p.NumAgents
+        model.addAgentOnTarget(model.targets(starts(k)).position, spec.maxSpeed, 1e-6);
+    end
 end
 
 model.setActivePolicy(char(p.Policy));
@@ -105,9 +128,13 @@ for i = 1:numel(f)
         end
     end
 end
-% A policy that plans up to the mission end (missionEnd) is told EndTime unless set explicitly
+% A policy that plans up to the mission end (missionEnd) is told EndTime unless set explicitly,
+% and one that allows for the simulation step (stepSize) is told Dt
 if isprop(pol, 'missionEnd') && ~isfield(p, 'Policy_missionEnd')
     pol.missionEnd = p.EndTime;
+end
+if isprop(pol, 'stepSize') && ~isfield(p, 'Policy_stepSize')
+    pol.stepSize = p.Dt;
 end
 % EnergyBeta (optional, in [0, 1)) sets an energy-aware policy's energyWeight by the paper's
 % App. A rule (EDRHCPolicy.weightFromBeta; EnergyBound "speed" (default) or "accel")
@@ -156,6 +183,7 @@ slopeJ = c(1);
 
 out = struct('finalJ', finalJ, 'steadyJ', steadyJ, 'slopeJ', slopeJ, ...
     'peakR', peakR, 'coLocationTime', coLocationTime, 'policy', pol);
+out.model = model;   % the scenario at the end of the run (agents, targets, stations)
 out.metricValues = model.metricValues(clock.currentTime);
 out.collisions = sum(model.collisions);   % steps in which an agent's motion crossed a wall
 % Energy-aware RHC metrics (paper eqs. 3 and 73): Je = sum of int |u|^2 dt (NaN when an agent

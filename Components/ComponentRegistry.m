@@ -32,6 +32,7 @@ classdef ComponentRegistry < handle
             obj.policies('ED-ORHC-SO')        = @() EDRHCPolicy(Transit="SO");
             obj.policies('ED-ORHC-FO-3')      = @() EDRHCPolicy(Transit="FO-3");
             obj.policies('Battery-Aware ED-RHC') = @() BatteryAwareRHCPolicy();
+            obj.policies('Energy-Aware ED-RHC') = @() EnergyAwareEDRHCPolicy();
             obj.policies('Collab-ED-RHC')     = @() CollabEDRHCPolicy();
             obj.policies('Simple Policy (example)') = @() SimplePolicy();
 

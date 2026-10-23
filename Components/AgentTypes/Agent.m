@@ -46,6 +46,8 @@ classdef (Abstract) Agent < handle & matlab.mixin.Heterogeneous
                                     % the battery is only reported, as in the RHC papers)
         maxNormalAccel = Inf        % normal acceleration available in turns, a_n (energy-aware
                                     % paper, A1): curves limit the speed to sqrt(a_n / kappa)
+        chargeAllowed = true        % false: a station does not charge it (a policy waiting for
+                                    % a booked slot clears it; reset sets it again)
 
         color = [0.8 0.2 0.2]
         size = 8
@@ -90,6 +92,7 @@ classdef (Abstract) Agent < handle & matlab.mixin.Heterogeneous
             obj.peakSpeed = 0;
             obj.peakAccel = 0;
             obj.mode = "idle";
+            obj.chargeAllowed = true;
             obj.battery.reset();
         end
 

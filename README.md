@@ -61,7 +61,7 @@ The **Scenario** dropdown (top of the Tools panel; `MainUI.loadScenario(name)` i
 | Campus | `Campus.mat` | Zoomed-out building complex: six buildings and a pond (obstacles), quad, parking; 11 sites, 5 agents |
 | Museum (event detection example) | `Museum.mat` | The beginner's example: four galleries around a hall, event targets (`SimpleTarget`), 3 robots at speed 4; every wall and target on the GUI's click grid |
 | JS: ... | `Legacy/JS_*.mat` | The eight presets of the legacy JS simulator (RHC papers), scaled to the canvas |
-| Energy: ... | `Energy/Energy_*.mat` | The energy-aware paper's setups (`makeEnergyLayouts`): the office floor with a 1-dock or 2-dock station and 3 robots, and the campus with two 2-dock stations and 6 robots; 120 W stations, robots at 1 m/s with the [full power model](#full-power-model-energy-aware-paper) and 6 Wh batteries |
+| Energy: ... | `Energy/Energy_*.mat` | The energy-aware paper's setups (`makeEnergyLayouts`): the office floor with a 1-dock or 2-dock station and 3 robots, and the campus with two 2-dock stations and 6 robots; 120 W stations, robots at 2 m/s with the [full power model](#full-power-model-energy-aware-paper) and 9 Wh batteries |
 
 `Configurations/scenarioCatalog.m` lists them. `Configurations/makeScenarioLayouts.m` draws the maps (`Configurations/backgrounds/*.png`) and writes their layouts from the same geometry, so walls line up with the drawn walls, buildings, coasts and piers. It also restyles the lab floor plan (`LabLayout.png`) in the same palette as `backgrounds/LabFloor.png`. Edit it to change a scenario, or add a row to the catalog for a new layout file.
 
@@ -74,7 +74,7 @@ The **Paper profile** dropdown (top of the Tools panel; `MainUI.setPaperProfile(
 | Full | Everything |
 | Simulator paper | Random Walk, ED-RHC, ED-ORHC-SO, ED-ORHC-FO-3, Battery-Aware ED-RHC and the example's classes; Abstract and Physical Agents; every planner, metric and scenario |
 | Collaboration paper | ED-RHC and Collab-ED-RHC with Abstract Agents on FO-0 transits; the JS presets, the "Collab: ..." setups and the Lab floor, Office floor, City patrol, Harbor patrol and Campus maps; J(t) |
-| Energy paper | ED-ORHC-SO, ED-ORHC-FO-3 and Battery-Aware ED-RHC; Abstract and Physical Agents with SO and FO-3 profiles; the "Energy: ..." setups and the Lab floor; J(t) and Minimum SOC |
+| Energy paper | ED-RHC, ED-ORHC-SO, ED-ORHC-FO-3, Battery-Aware ED-RHC and Energy-Aware ED-RHC; Abstract and Physical Agents with SO and FO-3 profiles; the "Energy: ..." setups and the Lab floor; J(t) and Minimum SOC |
 
 A profile only filters the dropdowns: when it hides the current choice, the first shown one is selected, and a loaded layout still shows the options it uses. The registry, layouts and `runTrial` ignore profiles, so no result depends on one. To add a profile, add a row to `paperProfiles.m`; a field left empty shows everything of that kind, and a scenario entry ending in `*` matches every scenario whose name starts with the rest (e.g. `"JS: *"`). `extensionTest` checks that every listed name exists.
 
@@ -316,6 +316,20 @@ On **Office floor with charging dock** (1500 s, seed 1, the layout's growth rate
 
 A slower station does not empty the batteries, since the reserve covers the worst-case wait, but it limits monitoring. Here the three robots draw about 40 W each and the dock charges at 300 W. At 100 W, no battery runs out either, but the dock is busy 85% (Abstract) and 96% (Physical) of the time, and `J` rises to 623 and 6581.
 
+### Energy-aware ED-RHC with charging coordination (Energy-Aware ED-RHC)
+
+`Energy-Aware ED-RHC` (`Components/AgentPolicy/EnergyAwareEDRHCPolicy.m`, a subclass of `EDRHCPolicy`) is the method of the energy-aware paper: ED-RHC with the [full power model](#full-power-model-energy-aware-paper), terminal values, and booked charging slots. It keeps ED-RHC's events and ordering cases. Batch 3a of the paper's simulator specification; the station scheduler (reported costs, reassignments, offers) follows.
+- **Objective.** For a plan of length `w` with transit time `rho`, `N = J + omega E^ex(rho) + dhhat`: the neighborhood's uncertainty integral, the transit's excess energy over idling (`Agent.transitPlanEnergy`, with battery losses), and the terminal correction.
+  - `terminal = "hhat"` (default) adds the targets' relative values `hhat_k(X(t_f)) - hhat_k(X(t))` (`CollabTargetCost.terminal`, as in Collab-ED-RHC); `"alpha"` uses ED-RHC-alpha's weights instead; `"none"` drops them.
+  - All three keep the energy value `hhat_E`, which adds `mu_a (E^ex + D_j - D_i)/(P_c - P_I)`: energy is priced by the charging time it costs (Proposition 3), with `mu_a >= 0` the targets' marginal cost of delay.
+  - `objectiveForm = "dinkelbach"` (default) minimizes `N - lambda w` with Dinkelbach's iteration on `lambda`; `"ratio"` minimizes `N/w` directly (the same plans; a solver check); `"alphaH"` minimizes `(J + dhhat_targets)/w + alphaH E^ex`. `omega = 0` by default.
+  - Without stations, with `terminal = "none"`, `omega = 0` and the ratio form, it makes ED-RHC's decisions (alpha 0.5).
+- **Bookings.** Every agent holds a booking: its home station (`RouteTable.homeStations`), a dock, and a slot start `t_a` on the station's grid `k t_s`. A plan to `j` must keep `t_f + T(j, sigma) + delta <= t_a` (a row on the plan length) and `E^ex(rho) + D(j, sigma) + P_I (t_a - t) <= E - E_min` (an interval of `rho`, from `E^ex` tabulated per edge), with `D` and `T` from the route tables and `P_I` with the battery's losses. With a mission end `T`, `t_f <= T`.
+  - `bookingStrategy = "a"` (default) books the free slot nearest the predicted need (energy at the mean power since the last charge); `"b"` the latest free slot in the agent's window.
+- **Charging.** With no affordable uncovered neighbor, or at its latest departure, the agent takes the least-energy route to its station without covering targets (on leaving, it moves its booking to the earliest free slot it can reach), waits there without charging until its slot (`Agent.chargeAllowed`), charges for the slot or until full, and books its next slot. Once its energy covers idling until `T`, it releases its booking.
+- **Records.** `charges`, `sessions` (agent, station, dock, slot, arrival, start, stop, energy before and after), `modeTime` (seconds monitoring, on the way, waiting and charging per agent: the monitoring share), and `windowMisses` (bookings outside the window, none expected).
+- **Setups.** Run it on the `"Energy: ..."` scenarios with `runTrial(..., 'AgentSettings', "layout", 'TargetRates', "layout")`, so the layout's robots and rates are used as in the GUI.
+
 ### Collaborative ED-RHC (Collab-ED-RHC)
 
 `Collab-ED-RHC` (`Components/AgentPolicy/CollabEDRHCPolicy.m`, target costs in `CollabTargetCost.m`) is the controller of the collaboration paper (W. Getts and S. Welikala, "Collaborative persistent monitoring", in preparation). It generalizes ED-RHC:
@@ -351,6 +365,8 @@ out = runTrial(struct('Layout', "ReportLayout.mat", 'AgentStarts', "layout", ...
 - `Seed`: the `rng` seed set before simulating (`-1`, the default, leaves `rng` as it is).
 - `Policy_<property>`: sets a property of the active policy, e.g. `'Policy_dwellScale', 0` turns off the Random Walk dwell and `'Policy_alpha', 0.5` sets ED-RHC's alpha.
 - `TargetRates`: `"params"` (default) gives every target `A_base` and `B`; `"layout"` keeps the layout file's per-target `A`, `B` and `R0`, e.g. the `Configurations/Collab/` setups with targets that only a group of agents can clear (`A_i > B_i`).
+- `AgentSettings`: `"params"` (default) places new agents from `AgentType`, `AgentSpeed` and the `Agent_<setting>` parameters; `"layout"` keeps the layout's agents with their stored settings (speed, limits, profile, battery and power model), e.g. the `Configurations/Energy/` setups, and only `Agent_<setting>` parameters given explicitly change them.
+- `out.model` is the scenario at the end of the run (agents, targets, stations).
 - `Log = true`: `out.log` holds the per-step time, `J(t)`, agent positions, velocities, accelerations, headings, SOC, battery energy and `J_e`; `out.metrics` holds per-agent path length `L`, heading change `Θ`, integrated squared acceleration `E_a`, final SOC and energy (`Experiments/metrics/`).
 
 `Experiments/runSweep(grid)` runs every combination of parameter values, and `analyzeResults` compares the variants.

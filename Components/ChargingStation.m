@@ -8,7 +8,8 @@ classdef ChargingStation < Target
     % the energy it delivered and the time it was in use.
     % docks (m_sigma, energy-aware paper Sec. 6.2) limits how many agents charge at once: an
     % agent at rest takes a free dock first come, first served, and holds it until it leaves;
-    % others wait without charging. Inf (the default) lets every agent at rest charge.
+    % others wait without charging. Inf (the default) lets every agent at rest charge. Agents
+    % whose chargeAllowed is false (a policy's choice) are not charged.
     properties
         chargePower = 100      % charging power [W]
         docks = Inf            % number of docks (agents charging at once)
@@ -32,6 +33,7 @@ classdef ChargingStation < Target
             % of them; R stays 0
             ag = obj.residingAgents;
             if iscell(ag), ag = [ag{:}]; end
+            if ~isempty(ag), ag = ag([ag.chargeAllowed]); end   % e.g. not before a booked slot
             if isfinite(obj.docks) && ~isempty(ag)
                 ids = [ag.index];
                 obj.docked = obj.docked(ismember(obj.docked, ids));        % those still here
@@ -53,9 +55,10 @@ classdef ChargingStation < Target
 
         function ts = slotLength(obj, agent, socMin)
             % Slot length t_s = (Q - E_min)/(P_c - P_I): a full charge from the reserve
-            % E_min = socMin Q under constant power, for agent's battery (Sec. 6.2)
+            % E_min = socMin Q under constant power, for agent's battery (Sec. 6.2; P_I with the
+            % battery's losses)
             b = agent.battery;
-            ts = (1 - socMin) * b.capacity / (obj.chargePower - b.idlePower());
+            ts = (1 - socMin) * b.capacity / (obj.chargePower - b.idleDraw());
         end
 
         function configure(obj, p)

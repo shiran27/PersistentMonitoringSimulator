@@ -5,9 +5,11 @@ function files = makeEnergyLayouts()
 %   Energy_Office_2Docks.mat     the same with 2 docks
 %   Energy_Campus_2Stations.mat  the campus with two stations of 2 docks each and 6 robots
 % Maps are in meters. Every robot has the paper's parameters (its simulator specification):
-% 1 m/s and 0.5 m/s^2, SO profiles, the DC-motor model of Tokekar et al.'s corridor calibration
-% (c1, c2, c3) = (17.75, 1.16, 10.46), with P_I and P_M from the Battery defaults, a 0.5 m/s^2
-% turn limit, 6 Wh batteries (a full battery lasts about 15-25% of a one-hour mission) that
+% 2 m/s and 1 m/s^2, SO profiles, the DC-motor model of Tokekar et al.'s corridor calibration
+% (c1, c2, c3) = (17.75, 1.16, 10.46), with P_I and P_M from the Battery defaults (so the
+% energy-optimal speed sqrt(dP/c2) = 1.45 m/s lies within the limits), a 1 m/s^2 turn limit,
+% 9 Wh batteries (at the 43.7 W an agent draws while monitoring, a full battery lasts 741 s,
+% about 20% of a one-hour mission) that
 % stop the robot when empty, and an internal resistance of 0.1 Ohm at 14.4 V. Stations charge
 % at 120 W, which meets Lemma 4 (P_c >= ceil(n/m) P_I = 69.4 W for 3 robots on 1 dock) with
 % slack. Targets have A = 1, B = 10, R(0) = 0. Each file is a base layout loaded with
@@ -35,8 +37,8 @@ fprintf('%d layouts in %s (changed ones rewritten)\n', numel(files), outDir);
                 t.setRates(1, 10, 0);
             end
         end
-        spec = AgentSpec(Type="Abstract Agent", MaxSpeed=1, MaxAccel=0.5, Profile="SO", BatteryWh=6, ...
-            StopWhenEmpty=1, MotorC1=17.75, MotorC2=1.16, MotorC3=10.46, MaxNormalAccel=0.5, ...
+        spec = AgentSpec(Type="Abstract Agent", MaxSpeed=2, MaxAccel=1, Profile="SO", BatteryWh=9, ...
+            StopWhenEmpty=1, MotorC1=17.75, MotorC2=1.16, MotorC3=10.46, MaxNormalAccel=1, ...
             BatteryR0=0.1, BatteryVoc=14.4);
         for a = model.agents(:)'
             spec.applyTo(a);

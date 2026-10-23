@@ -95,8 +95,13 @@ classdef Battery < handle
 
         function E = idleEnergy(obj, tau)
             % Battery energy [J] of idling for tau, losses included
+            E = obj.idleDraw() * tau;
+        end
+
+        function P = idleDraw(obj)
+            % Power drawn from the battery at rest [W], losses included (idlePower + beta idlePower^2)
             Pi = obj.idlePower();
-            E = (Pi + obj.beta * Pi^2) * tau;
+            P = Pi + obj.beta * Pi^2;
         end
 
         function E = excessEnergy(obj, P)

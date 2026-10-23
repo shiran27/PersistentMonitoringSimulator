@@ -211,7 +211,7 @@ classdef guiTest < matlab.uitest.TestCase
             tc.verifyEqual(tc.ui.paperProfileDropdown.Value, 'Full');
             tc.choose(tc.ui.paperProfileDropdown, 'Energy paper');
             tc.verifyEqual(sort(string(tc.ui.policyDropdown.Items)), ...
-                sort(["ED-ORHC-SO", "ED-ORHC-FO-3", "Battery-Aware ED-RHC"]));
+                sort(["ED-RHC", "ED-ORHC-SO", "ED-ORHC-FO-3", "Battery-Aware ED-RHC", "Energy-Aware ED-RHC"]));
             tc.verifyEqual(string(tc.ui.profileDropdown.ItemsData), ["SO", "FO-3"]);
             tc.verifyEqual(tc.ui.model.activePolicy, tc.ui.policyDropdown.Value, 'model follows the shown policy');
             tc.verifyEqual(tc.ui.model.agentSpec.profile, string(tc.ui.profileDropdown.Value), ...
