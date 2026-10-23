@@ -39,9 +39,20 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
     %    its station early moves its booking to the earliest free slot it can reach, which only
     %    raises its energy on arrival. Home stations balance the stations' utilization
     %    (RouteTable.homeStations).
-    % The rest of the paper's station scheduler (reported costs, reassignments, offers to other
-    % stations) is not part of this class yet. Stations charge only the agents in their slots
-    % (Agent.chargeAllowed is false otherwise, also for an agent dwelling at a station).
+    % 4. Station scheduler (Secs. 6.4-6.5, bookingStrategy "R"). After each commit an agent reports
+    %    its window [e_a, l_a] for the committed plan, its predicted need g_a = t + (E - E_min -
+    %    D(j))/Pbar_a and mu_a; the report reaches the station after delta. The station then
+    %    assigns its movable agents to dock-slots within their windows minimizing
+    %    sum_a mu_a |g - g_a| (plus switchSeconds mu_a per moved booking; matchpairs) and proposes
+    %    the moves as one group: an agent accepts at its next event if the slot lies in its
+    %    current window, both slots are held until every reply is in (the agent keeps both
+    %    feasible), and a decline, a lapsed lease or a departure cancels the group. A D2 request
+    %    may take a held slot, which cancels its group. Strategy "e" lets RHCP3 add the same cost
+    %    mu_a dist(g_a, [t_f + T(j) + delta, latest start the plan's energy allows]) and then
+    %    moves the booking to the free slot nearest g_a in that interval.
+    % mu_a weights each target's d hhat_k/d delta_k by the agent's share of its recent visits
+    % (priceShare). Stations charge only the agents in their slots (Agent.chargeAllowed is false
+    % otherwise, also for an agent dwelling at a station).
     % Parameters are properties ('Policy_<name>' in runTrial); runTrial sets missionEnd.
     properties
         objectiveForm = "dinkelbach"   % "dinkelbach", "ratio" or "alphaH"
@@ -51,7 +62,11 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         socMin = 0.1                   % reserve E_min = socMin Q
         missionEnd = Inf               % mission end T [s]
         bookingStrategy = "a"          % "a" predicted need (default), "b" latest safe slot (also after
-                                       % each commit)
+                                       % each commit), "R" placed at the predicted need and then
+                                       % optimized by the station, "e" chosen by RHCP3 with the plan
+        switchSeconds = 1              % "R": a moved booking costs mu_a times this [s]
+        leaseTime = NaN                % "R": a proposal lapses after this long without every reply [s]
+                                       % (NaN: the longest plan length seen plus 2 delta)
         messageDelay = 0               % delta [s], added to the time row
         marginTime = 0                 % margins of physical agents (time row [s], energy row [J])
         marginEnergy = 0
@@ -67,6 +82,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                                        % mu_a/(P_c - P_I) ("charging")
         priceAveraging = false         % true: mu_a is the running mean of the agent's values at its
                                        % events, instead of the value at this event
+        priceShare = true              % mu_a = sum_k pi_ak d hhat_k/d delta_k, pi_ak the agent's share of
+                                       % the recent visits to k (an EMA kept by the target; false: pi = 1)
+        priceShareRate = 0.2           % the EMA's weight of each new visit
         pullForward = true             % station pull-forward: time freed on a dock (a session ended before
                                        % its slot's end, or a released booking of the current slot) is
                                        % offered to the first booked agent in line (those that asked for
@@ -121,6 +139,18 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         lastOfferCheck = -Inf          % time of the stations' last check for freed time
         slotLens                       % station index -> slot length t_s
         hopsTo                         % node x station column: route hops (for the relay count)
+        shares                         % target x agent: share of the recent visits (priceShare)
+        agentIdx                       % agent indices, in the order of shares' columns
+        lastMu                         % agent index -> mu_a at its last RHCP
+        reports                        % "R": agent index -> its last window at its station
+        queue                          % messages in flight: struct(time, kind, agent, data), by time
+        groups                         % "R": group id -> proposed reassignment
+        pending                        % "R": agent index -> group that would move its booking
+        inbox                          % "R": agent index -> delivered proposal not yet answered
+        acceptedNew                    % "R": agent index -> accepted booking not yet committed
+        nextGroup = 0
+        maxPlan = 0                    % longest plan length committed (the default lease)
+        lastQueueCheck = -Inf
     end
 
     methods
@@ -153,6 +183,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                     obj.forgetAgent(agent.index);
                     cmd = obj.depart(agent, model, adj, i, simTime);
                 otherwise
+                    obj.answerProposal(agent, i, simTime);
                     obj.maybeRelease(agent, simTime);
                     if obj.acceptOffer(agent, model, i, simTime)
                         cmd = obj.goStation(agent, model, i, simTime);
@@ -172,6 +203,10 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 obj.modeTime(agent.index, k) = obj.modeTime(agent.index, k) + simTime - obj.lastStep(agent.index);
             end
             obj.lastStep(agent.index) = simTime;
+            if simTime > obj.lastQueueCheck && (~isempty(obj.queue) || obj.groups.Count > 0)
+                obj.lastQueueCheck = simTime;
+                obj.deliver(model, simTime);
+            end
             if obj.pullForward && simTime > obj.lastOfferCheck && obj.freed.Count > 0
                 obj.lastOfferCheck = simTime;
                 obj.offerFreedTime(model, simTime);
@@ -195,7 +230,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 best = rhcp@EDRHCPolicy(obj, kind, agent, model, i, simTime, adj);
                 obj.noteBinding(best);
                 obj.noteNone(best, kind, agent, model, adj, i);
-                obj.moveLater(agent, model, i, best);
+                obj.afterCommit(agent, model, i, best);
                 return;
             end
             lam = 0;
@@ -213,7 +248,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.lambdas(agent.index) = lam;
             obj.noteBinding(best);
             obj.noteNone(best, kind, agent, model, adj, i);
-            obj.moveLater(agent, model, i, best);
+            obj.afterCommit(agent, model, i, best);
         end
 
         function m = modeOf(obj, agent)
@@ -231,6 +266,11 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         function R = routeTable(obj)
             R = obj.routes;
         end
+
+        function S = visitShares(obj)
+            % targets x agents: each agent's share of the recent visits (priceShare's pi_ak)
+            S = obj.shares;
+        end
     end
 
     methods (Access = protected)
@@ -243,6 +283,14 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.ctx.E = tab.E;
             [budget, D] = obj.energyBudget(agent, j);
             obj.ctx.D = D;
+            bk = obj.activeBooking(agent);
+            if obj.bookingStrategy == "e" && ~isempty(bk)   % the slot cost of strategy "e"
+                bat = agent.battery; col = obj.stationColumn(bk.station); t = obj.hood.t;
+                [~, tE] = obj.rowStarts(agent, bk);
+                obj.ctx.slot = struct('lo', t + obj.routes.T(j, col) + obj.messageDelay + obj.marginT, ...
+                    'hi', tE + budget / bat.idleDraw(), 'P', bat.idleDraw(), 'mu', obj.lastMuOf(agent), ...
+                    'need', t + (bat.remaining - obj.socMin * bat.capacity - D) / obj.meanPower(agent, t));
+            end
             if obj.transit == "FO-0"   % fixed transit time
                 if tab.E(rr(1)) > budget, rr = []; end
                 return;
@@ -270,7 +318,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             bk = obj.activeBooking(agent);
             if ~isempty(bk)
                 col = obj.stationColumn(bk.station);
-                slack = bk.start - t - obj.messageDelay - obj.marginT;
+                slack = obj.rowStarts(agent, bk) - t - obj.messageDelay - obj.marginT;
                 lim = min(lim, slack - obj.routes.T(j, col));
                 % and the station stays reachable from i after the dwell there (route times are
                 % along least-energy routes, so T(i) <= rho_ij + T(j) need not hold)
@@ -301,6 +349,10 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                     J = (Jint + dh) ./ w + obj.alphaH * Eex;
                 otherwise
                     N = Jint + obj.omega * Eex + dh + obj.hood.muE * (Eex + obj.ctx.D - obj.hood.Di);   % hhat_E
+                    if isfield(obj.ctx, 'slot')   % "e": the distance of the need from the plan's slot starts
+                        sl = obj.ctx.slot;
+                        N = N + sl.mu * (max(0, sl.lo + w - sl.need) + max(0, sl.need - sl.hi + Eex / sl.P));
+                    end
                     if obj.objectiveForm == "ratio"
                         J = N ./ w;
                     else
@@ -319,7 +371,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 % waiting there does). With every neighbor covered, ED-RHC's hold and retry applies
                 obj.stats.noAffordable = obj.stats.noAffordable + 1;
                 b = obj.bookings(agent.index);
-                latest = b.start - obj.routes.T(i, obj.stationColumn(b.station)) - obj.messageDelay - obj.marginT;
+                latest = obj.rowStarts(agent, b) - obj.routes.T(i, obj.stationColumn(b.station)) - ...
+                    obj.messageDelay - obj.marginT;
                 full = agent.battery.soc >= 0.99;   % nothing to charge: no earlier slot to ask for
                 if (~full && obj.requestEarlier(agent, model, i, simTime)) || simTime >= latest - 1e-9
                     cmd = obj.goStation(agent, model, i, simTime);
@@ -373,6 +426,15 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.freed = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.lastOfferCheck = -Inf;
             obj.slotLens = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.lastMu = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.reports = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.groups = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.pending = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.inbox = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.acceptedNew = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.queue = struct('time', {}, 'kind', {}, 'agent', {}, 'data', {});
+            obj.nextGroup = 0; obj.maxPlan = 0; obj.lastQueueCheck = -Inf;
+            obj.shares = []; obj.agentIdx = [];
             obj.modeTime = zeros(0, 4);
             obj.homes = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.grids = containers.Map('KeyType', 'double', 'ValueType', 'any');
@@ -383,7 +445,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.stats = struct('rhcp', 0, 'energyBinds', 0, 'timeBinds', 0, 'noAffordable', 0, ...
                 'transits', zeros(0, 2), 'none', zeros(1, 5), ...  % none: covered, energy, time, cost, kind 1-2
                 'offers', 0, 'accepted', 0, ...                     % pull-forward offers sent and accepted
-                'movedLater', 0, 'foreign', 0, ...                  % "b" moves after commits; grants elsewhere
+                'commitMoves', 0, 'foreign', 0, ...                 % "b"/"e" moves after commits; grants elsewhere
+                'reports', 0, 'proposals', 0, 'commits', 0, 'cancels', 0, ...   % "R"'s protocol
                 'bookingChanges', 0, ...                            % bookings made, moved and released
                 'messages', 0, 'relays', 0);                        % end-to-end messages; their relay hops
             obj.rows = containers.Map('KeyType', 'double', 'ValueType', 'any');
@@ -398,6 +461,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.initialized = true;
             nT = numel(model.targets);
             obj.gapSum = zeros(1, nT); obj.gapCount = zeros(1, nT); obj.lastLeft = nan(1, nT);
+            obj.agentIdx = [model.agents.index];
+            obj.shares = ones(nT, numel(model.agents)) / numel(model.agents);
             starts = [model.agents.current_target_idx];
             obj.lastLeft(~ismember(1:nT, starts)) = simTime;
             adj = model.buildAdjacency();
@@ -458,7 +523,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             kLo = max(ceil(e / ts - 1e-9), 0); kHi = floor(l / ts + 1e-9);
             if kHi + 1 > size(G, 2), G(:, end+1:kHi + 1) = 0; end
             ks = kHi:-1:kLo;                    % "b": the latest first
-            if obj.bookingStrategy == "a"       % "a": nearest the need at the mean power since the last charge
+            if obj.bookingStrategy ~= "b"       % "a", "R", "e": nearest the need at the mean power since the last charge
                 need = t + (bat.remaining - obj.socMin * bat.capacity - obj.routes.D(i, col)) / obj.meanPower(agent, t);
                 [~, order] = sort(abs(ks * ts - need));
                 ks = ks(order);
@@ -500,6 +565,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             % its own agents keep Lemma 4's condition with the visitor; the home booking is then
             % released
             moved = false;
+            if isKey(obj.pending, agent.index), obj.cancelGroup(obj.pending(agent.index)); end
             b = obj.bookings(agent.index);
             bat = agent.battery;
             best = [b.start, -Inf, NaN, NaN, NaN];  % start, D, station, dock, slot (no tie with the booking)
@@ -514,7 +580,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 for k = max(ceil(e / len - 1e-9), 0):size(G, 2) - 1
                     g = k * len;
                     if g > best(1) + 1e-9, break; end
-                    d = find(G(:, k + 1) == 0, 1);
+                    d = find(G(:, k + 1) <= 0, 1);   % free, or held by a proposal (preempted)
                     if isempty(d), continue; end
                     if s ~= b.station && bat.remaining - obj.socMin * bat.capacity - obj.marginE - D - ...
                             bat.idleDraw() * (g - t) < 0
@@ -535,6 +601,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 b.station = s; b.length = obj.slotLens(s);
             end
             G = obj.grids(s);
+            if G(best(4), best(5) + 1) < 0, obj.cancelGroup(-G(best(4), best(5) + 1)); G = obj.grids(s); end
             G(G == agent.index) = 0; G(best(4), best(5) + 1) = agent.index;
             obj.grids(s) = G;
             b.dock = best(4); b.slot = best(5); b.start = best(1);
@@ -563,32 +630,217 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.stats.relays = obj.stats.relays + n * obj.hopsTo(node, obj.stationColumn(s));
         end
 
-        function moveLater(obj, agent, model, i, best)
-            % Strategy "b" after a commit: the booking moves to the latest free slot that keeps the
-            % committed plan to best.j feasible, i.e. whose start is at most where the energy row
-            % for the plan's E^ex binds (the time rows only bound the start from below)
-            if obj.bookingStrategy ~= "b" || isempty(best.j), return; end
+        function afterCommit(obj, agent, model, i, best)
+            % After a commit: "b" moves the booking to the latest free slot that keeps the plan to
+            % best.j feasible (its start at most where the energy row for the plan's E^ex binds;
+            % the time rows bound it from below), "e" to the free slot nearest the predicted need
+            % among those the plan admits, and "R" reports the window to the station
+            if isempty(best.j) || ~any(obj.bookingStrategy == ["b", "e", "R"]), return; end
             b = obj.activeBooking(agent);
             if isempty(b), return; end
-            obj.message(2, i, b.station);   % request and reply
+            t = obj.hood.t; bat = agent.battery; col = obj.stationColumn(b.station);
+            w = sum(best.x) + best.rho;
+            obj.maxPlan = max(obj.maxPlan, w);
             tab = obj.energyTable(agent, model, i, best.j, model.findEdge(i, best.j).curvePoints);
-            budget = obj.energyBudget(agent, best.j);
-            latest = b.start + (budget - tab.E(best.rho)) / agent.battery.idleDraw();
+            [~, tE] = obj.rowStarts(agent, b);
+            latest = tE + (obj.energyBudget(agent, best.j) - tab.E(best.rho)) / bat.idleDraw();
+            earliest = max(t + w + obj.routes.T(best.j, col), t + best.x(1) + best.x(2) + obj.routes.T(i, col)) + ...
+                obj.messageDelay + obj.marginT;
+            need = t + (bat.remaining - obj.socMin * bat.capacity - obj.routes.D(best.j, col)) / obj.meanPower(agent, t);
+            if obj.bookingStrategy == "R"
+                obj.send("report", agent.index, struct('e', earliest, 'l', latest, 'need', need, ...
+                    'mu', obj.hood.mu), t, i, b.station);
+                obj.stats.reports = obj.stats.reports + 1;
+                return;
+            end
+            if isKey(obj.pending, agent.index), return; end
+            obj.message(2, i, b.station);   % request and reply
             G = obj.grids(b.station);
             kHi = floor(latest / b.length + 1e-9);
             if kHi + 1 > size(G, 2), G(:, end+1:kHi + 1) = 0; end
-            for k = kHi:-1:b.slot + 1
+            if obj.bookingStrategy == "b"
+                ks = kHi:-1:b.slot + 1;
+            else
+                ks = max(ceil(earliest / b.length - 1e-9), floor(t / b.length) + 1):kHi;
+                [~, o] = sort(abs(ks * b.length - need)); ks = ks(o);
+            end
+            for k = ks
+                if k == b.slot, return; end   % the booking is already the best one
                 d = find(G(:, k + 1) == 0, 1);
                 if ~isempty(d)
                     G(G == agent.index) = 0; G(d, k + 1) = agent.index;
                     obj.grids(b.station) = G;
                     b.dock = d; b.slot = k; b.start = k * b.length;
                     obj.bookings(agent.index) = b;
-                    obj.stats.movedLater = obj.stats.movedLater + 1;
+                    obj.stats.commitMoves = obj.stats.commitMoves + 1;
                     obj.stats.bookingChanges = obj.stats.bookingChanges + 1;
                     return;
                 end
             end
+        end
+
+        function mu = lastMuOf(obj, agent)
+            mu = 0;
+            if isKey(obj.lastMu, agent.index), mu = obj.lastMu(agent.index); end
+        end
+
+        function [tTime, tEnergy] = rowStarts(obj, agent, bk)
+            % Slot starts for the booking rows: with an accepted proposal not yet committed ("R"),
+            % plans keep both bookings, the earlier for the time rows and the later for the energy row
+            tTime = bk.start; tEnergy = bk.start;
+            if isKey(obj.acceptedNew, agent.index)
+                g = obj.acceptedNew(agent.index).start;
+                tTime = min(tTime, g); tEnergy = max(tEnergy, g);
+            end
+        end
+
+        function send(obj, kind, a, data, t, node, s)
+            % A message between agent a at node and station s, delivered after delta (deliver)
+            obj.queue(end+1) = struct('time', t + obj.messageDelay, 'kind', kind, 'agent', a, 'data', data);
+            obj.message(1, node, s);
+        end
+
+        function deliver(obj, model, t)
+            % Messages due by t, in the order sent, then lapsed leases
+            while ~isempty(obj.queue) && obj.queue(1).time <= t + 1e-9
+                m = obj.queue(1); obj.queue(1) = [];
+                switch m.kind
+                    case "report"
+                        obj.reports(m.agent) = m.data;
+                        b = obj.activeBooking(model.agents([model.agents.index] == m.agent));
+                        if ~isempty(b), obj.resolve(model, b.station, t); end
+                    case "proposal"
+                        if isKey(obj.groups, m.data), obj.inbox(m.agent) = m.data; end
+                    case "reply"
+                        obj.answer(m.agent, m.data.gid, m.data.ok, t);
+                end
+            end
+            for gid = cell2mat(keys(obj.groups))
+                grp = obj.groups(gid);
+                if grp.expires <= t, obj.cancelGroup(gid); end
+            end
+        end
+
+        function resolve(obj, model, s, t)
+            % "R" at station s: assigns its movable agents (monitoring, booked here in a future
+            % slot, window reported, no proposal pending) to dock-slots within their windows,
+            % minimizing sum_a mu_a (|g - g_a| + switchSeconds [moved]) (matchpairs); the moves go
+            % out as one proposal group, their free target slots held (-group id in the grid)
+            G = obj.grids(s); len = obj.slotLens(s);
+            kNow = floor(t / len + 1e-9);
+            ags = []; cur = zeros(0, 2);
+            for a = model.agents(:)'
+                b = obj.activeBooking(a);
+                if isempty(b) || b.station ~= s || obj.modeOf(a) ~= "monitor" || b.slot <= kNow || ...
+                        isKey(obj.pending, a.index) || ~isKey(obj.reports, a.index), continue; end
+                ags(end+1) = a.index; cur(end+1, :) = [b.dock, b.slot]; %#ok<AGROW>
+            end
+            if isempty(ags) || kNow + 1 > size(G, 2) - 1, return; end
+            [D, K] = ndgrid(1:size(G, 1), kNow + 1:size(G, 2) - 1);
+            cells = [D(:), K(:)];
+            own = G(sub2ind(size(G), cells(:, 1), cells(:, 2) + 1));
+            cells = cells(own == 0 | ismember(own, ags), :);
+            C = 1e13 * ones(numel(ags), size(cells, 1));   % 1e13: not allowed (above two unmatched)
+            g = cells(:, 2)' * len;
+            for r = 1:numel(ags)
+                rp = obj.reports(ags(r));
+                moved = cells(:, 1)' ~= cur(r, 1) | cells(:, 2)' ~= cur(r, 2);
+                ok = (g >= max(rp.e, t) - 1e-9 & g <= rp.l + 1e-9) | ~moved;   % its own slot always
+                C(r, ok) = rp.mu * (abs(g(ok) - rp.need) + obj.switchSeconds * moved(ok)) + 1e-9 * moved(ok);
+            end
+            M = matchpairs(C, 1e12);
+            if size(M, 1) < numel(ags), return; end
+            M = sortrows(M);
+            new = cells(M(:, 2), :);
+            mv = any(new ~= cur, 2);
+            if ~any(mv), return; end
+            gid = obj.nextGroup + 1; obj.nextGroup = gid;
+            lease = obj.leaseTime;
+            if isnan(lease), lease = max(obj.maxPlan, 1) + 2 * obj.messageDelay; end
+            grp = struct('station', s, 'agents', ags(mv), 'old', cur(mv, :), 'new', new(mv, :), ...
+                'ok', false(1, nnz(mv)), 'expires', t + lease);
+            for r = 1:nnz(mv)
+                if G(grp.new(r, 1), grp.new(r, 2) + 1) == 0, G(grp.new(r, 1), grp.new(r, 2) + 1) = -gid; end
+            end
+            obj.grids(s) = G;
+            obj.groups(gid) = grp;
+            for a = grp.agents
+                obj.pending(a) = gid;
+                obj.send("proposal", a, gid, t, model.agents([model.agents.index] == a).current_target_idx, s);
+            end
+            obj.stats.proposals = obj.stats.proposals + 1;
+        end
+
+        function answerProposal(obj, agent, i, t)
+            % "R", at the agent's event: accept a delivered proposal if its slot lies in the
+            % agent's current window; from then on its plans keep both bookings (rowStarts)
+            if ~isKey(obj.inbox, agent.index), return; end
+            gid = obj.inbox(agent.index); remove(obj.inbox, agent.index);
+            if ~isKey(obj.groups, gid), return; end
+            grp = obj.groups(gid);
+            r = find(grp.agents == agent.index);
+            s = grp.station; col = obj.stationColumn(s); bat = agent.battery;
+            g = grp.new(r, 2) * obj.slotLens(s);
+            e = t + obj.routes.T(i, col) + obj.messageDelay + obj.marginT;
+            l = t + (bat.remaining - obj.socMin * bat.capacity - obj.marginE - obj.routes.D(i, col)) / bat.idleDraw();
+            ok = g >= e - 1e-9 && g <= l + 1e-9;
+            if ok
+                obj.acceptedNew(agent.index) = struct('dock', grp.new(r, 1), 'slot', grp.new(r, 2), 'start', g);
+            end
+            obj.send("reply", agent.index, struct('gid', gid, 'ok', ok), t, i, s);
+        end
+
+        function answer(obj, a, gid, ok, t)
+            % "R", at the station: a reply; commit the group once every agent accepted
+            if ~isKey(obj.groups, gid), return; end
+            grp = obj.groups(gid);
+            grp.ok(grp.agents == a) = ok;
+            obj.groups(gid) = grp;
+            if ~ok
+                obj.cancelGroup(gid);
+            elseif all(grp.ok)
+                obj.commitGroup(gid, t);
+            end
+        end
+
+        function commitGroup(obj, gid, ~)
+            % Every agent of the group accepted: the bookings move (their old slots free unless
+            % another agent of the group takes them), and each agent is told
+            grp = obj.groups(gid); s = grp.station;
+            G = obj.grids(s); len = obj.slotLens(s);
+            for r = 1:numel(grp.agents)
+                if G(grp.old(r, 1), grp.old(r, 2) + 1) == grp.agents(r), G(grp.old(r, 1), grp.old(r, 2) + 1) = 0; end
+            end
+            for r = 1:numel(grp.agents)
+                a = grp.agents(r);
+                G(grp.new(r, 1), grp.new(r, 2) + 1) = a;
+                b = obj.bookings(a);
+                b.dock = grp.new(r, 1); b.slot = grp.new(r, 2); b.start = grp.new(r, 2) * len;
+                obj.bookings(a) = b;
+                if isKey(obj.pending, a), remove(obj.pending, a); end
+                if isKey(obj.acceptedNew, a), remove(obj.acceptedNew, a); end
+                obj.message(1, obj.lastNode(a), s);   % the commit notice
+            end
+            G(G == -gid) = 0;
+            obj.grids(s) = G;
+            remove(obj.groups, gid);
+            obj.stats.commits = obj.stats.commits + 1;
+            obj.stats.bookingChanges = obj.stats.bookingChanges + numel(grp.agents);
+        end
+
+        function cancelGroup(obj, gid)
+            % A decline, a lapsed lease, a departure or a preempting request: the held slots free
+            % and every agent of the group keeps its booking
+            if ~isKey(obj.groups, gid), return; end
+            grp = obj.groups(gid);
+            G = obj.grids(grp.station); G(G == -gid) = 0; obj.grids(grp.station) = G;
+            for a = grp.agents
+                if isKey(obj.pending, a) && obj.pending(a) == gid, remove(obj.pending, a); end
+                if isKey(obj.acceptedNew, a), remove(obj.acceptedNew, a); end
+                if isKey(obj.inbox, a) && obj.inbox(a) == gid, remove(obj.inbox, a); end
+            end
+            remove(obj.groups, gid);
+            obj.stats.cancels = obj.stats.cancels + 1;
         end
 
         function unbook(obj, agent)
@@ -621,7 +873,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             D = 0;
             if ~isempty(bk)
                 D = obj.routes.D(j, obj.stationColumn(bk.station));
-                budget = bat.remaining - obj.socMin * bat.capacity - obj.marginE - D - bat.idleDraw() * (bk.start - t);
+                [~, tE] = obj.rowStarts(agent, bk);
+                budget = bat.remaining - obj.socMin * bat.capacity - obj.marginE - D - bat.idleDraw() * (tE - t);
             elseif ~isempty(obj.routes) && isfinite(obj.missionEnd)
                 budget = bat.remaining - obj.socMin * bat.capacity - obj.marginE - bat.idleDraw() * (obj.missionEnd - t);
                 budget = max(budget, 0);   % released: keep idling possible, never strand the agent
@@ -670,7 +923,11 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             s = obj.missionEnd - simTime;
             h0 = CollabTargetCost.terminal(R, A, c, gap, s, lam);
             dl = 1e-4 * max(1, gap);
-            mu = max(sum((CollabTargetCost.terminal(R, A, c, gap + dl, s, lam) - h0) ./ dl, 'omitnan'), 0);
+            dh = (CollabTargetCost.terminal(R, A, c, gap + dl, s, lam) - h0) ./ dl;
+            if obj.priceShare && ~isempty(obj.shares)   % weighted by the agent's share of the visits
+                dh = dh .* obj.shares(hd, obj.agentIdx == agent.index)';
+            end
+            mu = max(sum(dh, 'omitnan'), 0);
             h0 = sum(h0, 'omitnan');
             bk = obj.activeBooking(agent);
             muE = 0; Di = 0;
@@ -690,6 +947,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             end
             obj.hood = struct('t', simTime, 'nodes', hd, 'gap', gap, 'c', c, 'lam', lam, ...
                 'h0', h0, 'mu', mu, 'muE', muE, 'Di', Di);
+            obj.lastMu(agent.index) = mu;
         end
 
         function dh = terminalTargets(obj, d, P, rho, w)
@@ -727,7 +985,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 for a = model.agents(:)'
                     b = obj.activeBooking(a);
                     if isempty(b) || b.station ~= s || obj.modeOf(a) ~= "monitor", continue; end
-                    if isKey(obj.offers, a.index), continue; end
+                    if isKey(obj.offers, a.index) || isKey(obj.pending, a.index), continue; end
                     if a.battery.soc > 1 - obj.pullMinCharge, continue; end   % not worth a session yet
                     arrive = t + obj.routes.T(a.current_target_idx, col) + obj.messageDelay + obj.marginT;
                     if arrive >= min(until, b.start), continue; end
@@ -776,7 +1034,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             f = obj.offers(agent.index); remove(obj.offers, agent.index);
             obj.message(1, i, f.station);   % accepts or declines
             b = obj.activeBooking(agent);
-            if isempty(b) || b.station ~= f.station, return; end
+            if isempty(b) || b.station ~= f.station || isKey(obj.pending, agent.index), return; end
             col = obj.stationColumn(b.station);
             if t + obj.routes.T(i, col) + obj.messageDelay + obj.marginT >= min(f.until, b.start), return; end
             G = obj.grids(b.station);
@@ -869,6 +1127,10 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             % Unattended-time history: a target attended again after being left alone
             if isKey(obj.lastNode, agent.index) && obj.lastNode(agent.index) == i, return; end
             obj.lastNode(agent.index) = i;
+            if ~isempty(obj.shares) && ~isa(model.targets(i), 'ChargingStation')   % visit shares (EMA)
+                beta = obj.priceShareRate;
+                obj.shares(i, :) = (1 - beta) * obj.shares(i, :) + beta * (obj.agentIdx == agent.index);
+            end
             others = model.agents([model.agents.index] ~= agent.index);   % (no ~= on a mixed-type array)
             alone = ~any(arrayfun(@(o) isempty(o.path) && o.current_target_idx == i, others));
             if alone && ~isnan(obj.lastLeft(i))
@@ -894,6 +1156,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             if bat.remaining - obj.socMin * bat.capacity - obj.marginE >= ...
                     max(obj.meanPower(agent, t), bat.idleDraw()) * (obj.missionEnd - t)
                 if bk.start <= t, obj.freeTime(bk.station, bk.dock, t, bk.start + bk.length); end
+                if isKey(obj.pending, agent.index), obj.cancelGroup(obj.pending(agent.index)); end
                 obj.unbook(agent);
                 obj.message(1, agent.current_target_idx, bk.station);
                 obj.stats.bookingChanges = obj.stats.bookingChanges + 1;
@@ -908,7 +1171,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             tf = false;
             if isempty(bk), return; end
             col = obj.stationColumn(bk.station);
-            tf = t >= bk.start - obj.routes.T(i, col) - obj.messageDelay - obj.marginT - 1e-9;
+            tf = t >= obj.rowStarts(agent, bk) - obj.routes.T(i, col) - obj.messageDelay - obj.marginT - 1e-9;
         end
 
         function [ok, uncovered] = canAffordNeighbor(obj, agent, model, adj, i, t)
@@ -927,7 +1190,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 pts = model.findEdge(i, j).curvePoints;
                 rr = obj.transitRange(agent, model, i, j, pts, [agent.limitTransit(pts), obj.H]);
                 if isempty(rr), continue; end
-                if t + rr(1) + obj.routes.T(j, col) + obj.messageDelay + obj.marginT <= bk.start
+                if t + rr(1) + obj.routes.T(j, col) + obj.messageDelay + obj.marginT <= obj.rowStarts(agent, bk)
                     ok = true; return;
                 end
             end
@@ -941,6 +1204,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.modes(agent.index) = "toStation";
             if isKey(obj.offers, agent.index), remove(obj.offers, agent.index); end
             if isKey(obj.wantsEarlier, agent.index), remove(obj.wantsEarlier, agent.index); end
+            if isKey(obj.pending, agent.index), obj.cancelGroup(obj.pending(agent.index)); end
             obj.forgetAgent(agent.index);
             b = obj.bookings(agent.index);
             if i ~= b.station
@@ -1003,6 +1267,15 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             agent.chargeAllowed = false;
             obj.lastCharge(agent.index) = [t, agent.battery.remaining];
             obj.book(agent, model, i, t, t);
+            if obj.bookingStrategy == "R"   % the new window, from the station
+                b = obj.bookings(agent.index); bat = agent.battery; col = obj.stationColumn(b.station);
+                mu = obj.lastMuOf(agent);
+                obj.send("report", agent.index, struct('e', t + obj.routes.T(i, col) + obj.messageDelay + obj.marginT, ...
+                    'l', t + (bat.remaining - obj.socMin * bat.capacity - obj.marginE - obj.routes.D(i, col)) / bat.idleDraw(), ...
+                    'need', t + (bat.remaining - obj.socMin * bat.capacity - obj.routes.D(i, col)) / obj.meanPower(agent, t), ...
+                    'mu', mu), t, i, b.station);
+                obj.stats.reports = obj.stats.reports + 1;
+            end
             obj.note(6, agent, i, t);
         end
     end

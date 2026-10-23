@@ -5,7 +5,8 @@ function energyPolicyTest()
 %
 % 1. Special cases: without stations, with terminal "none", omega = 0 and the ratio form, it
 %    makes ED-RHC's decisions (alpha = 0.5); the Dinkelbach form gives the ratio form's plans.
-% 2. Safety on the energy setups (strategy "a", and "b" on the office): no battery goes below the reserve E_min = socMin Q; no two
+% 2. Safety on the energy setups (strategy "a"; "b" and "e" on the office; "R" on two docks with
+%    a 1 s message delay, whose protocol must run): no battery goes below the reserve E_min = socMin Q; no two
 %    sessions overlap on a dock; every agent arrived by its slot and every session ended by its
 %    slot's end (early starts on idle docks allowed); every booking lay in its agent's window.
 % 3. Bookings are released at the end of the mission; time in the modes adds up to T.
@@ -40,18 +41,25 @@ check(abs(dk.finalJ / rt.finalJ - 1) < 1e-3, sprintf('Dinkelbach form = ratio fo
     dk.finalJ, rt.finalJ));
 
 % ---- 2-3. Safety, bookings, release, modes ----
-runs = ["Energy_Office_1Dock", "a"; "Energy_Office_2Docks", "a"; "Energy_Campus_2Stations", "a"; ...
-        "Energy_Office_1Dock", "b"];   % layout, booking strategy
-for r = 1:size(runs, 1)
+runs = ["Energy_Office_1Dock", "a", 0; "Energy_Office_2Docks", "a", 0; "Energy_Campus_2Stations", "a", 0; ...
+        "Energy_Office_1Dock", "b", 0; "Energy_Office_1Dock", "e", 0; "Energy_Office_2Docks", "R", 1];
+for r = 1:size(runs, 1)   % layout, booking strategy, message delay [s]
     setup = runs(r, 1);
     q = dock; q.Layout = "Energy/" + setup + ".mat"; q.EndTime = 1800; q.Dt = 0.05;
-    q.Policy_bookingStrategy = runs(r, 2);
-    if runs(r, 2) ~= "a", setup = setup + " (strategy " + runs(r, 2) + ")"; end
+    q.Policy_bookingStrategy = runs(r, 2); q.Policy_messageDelay = double(runs(r, 3));
+    if runs(r, 2) ~= "a", setup = setup + " (strategy " + runs(r, 2) + ", delta " + runs(r, 3) + " s)"; end
     out = runTrial(q); pol = out.policy; S = pol.sessions;
     lay = load(fullfile(root, 'Configurations', 'Energy', runs(r, 1) + ".mat"), 's');
     Q = lay.s.agentBatteryWh(1) * 3600;
     minSoc = min(out.log.soc(:));
     ok = minSoc >= pol.socMin - 1e-3 && pol.windowMisses == 0 && pol.charges > 0;
+    if runs(r, 2) == "R"   % the station's protocol ran
+        ok = ok && pol.stats.proposals > 0 && pol.stats.commits > 0;
+        setup = setup + sprintf(" [%d reports, %d proposals, %d commits, %d cancels]", pol.stats.reports, ...
+            pol.stats.proposals, pol.stats.commits, pol.stats.cancels);
+    end
+    share = pol.visitShares();
+    ok = ok && all(abs(sum(share, 2) - 1) < 1e-9);   % priceShare: each target's shares sum to 1
     st = [S.start]; sp = [S.stop]; sp(isnan(sp)) = q.EndTime;
     maxAtOnce = 0;                       % sessions at once on one dock
     for sd = unique([[S.station]; [S.dock]]', 'rows')'
