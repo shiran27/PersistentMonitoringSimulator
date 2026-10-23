@@ -5,7 +5,7 @@ function energyPolicyTest()
 %
 % 1. Special cases: without stations, with terminal "none", omega = 0 and the ratio form, it
 %    makes ED-RHC's decisions (alpha = 0.5); the Dinkelbach form gives the ratio form's plans.
-% 2. Safety on the energy setups: no battery goes below the reserve E_min = socMin Q; no two
+% 2. Safety on the energy setups (strategy "a", and "b" on the office): no battery goes below the reserve E_min = socMin Q; no two
 %    sessions overlap on a dock; every agent arrived by its slot and every session ended by its
 %    slot's end (early starts on idle docks allowed); every booking lay in its agent's window.
 % 3. Bookings are released at the end of the mission; time in the modes adds up to T.
@@ -40,10 +40,15 @@ check(abs(dk.finalJ / rt.finalJ - 1) < 1e-3, sprintf('Dinkelbach form = ratio fo
     dk.finalJ, rt.finalJ));
 
 % ---- 2-3. Safety, bookings, release, modes ----
-for setup = ["Energy_Office_1Dock", "Energy_Office_2Docks", "Energy_Campus_2Stations"]
+runs = ["Energy_Office_1Dock", "a"; "Energy_Office_2Docks", "a"; "Energy_Campus_2Stations", "a"; ...
+        "Energy_Office_1Dock", "b"];   % layout, booking strategy
+for r = 1:size(runs, 1)
+    setup = runs(r, 1);
     q = dock; q.Layout = "Energy/" + setup + ".mat"; q.EndTime = 1800; q.Dt = 0.05;
+    q.Policy_bookingStrategy = runs(r, 2);
+    if runs(r, 2) ~= "a", setup = setup + " (strategy " + runs(r, 2) + ")"; end
     out = runTrial(q); pol = out.policy; S = pol.sessions;
-    lay = load(fullfile(root, 'Configurations', 'Energy', setup + ".mat"), 's');
+    lay = load(fullfile(root, 'Configurations', 'Energy', runs(r, 1) + ".mat"), 's');
     Q = lay.s.agentBatteryWh(1) * 3600;
     minSoc = min(out.log.soc(:));
     ok = minSoc >= pol.socMin - 1e-3 && pol.windowMisses == 0 && pol.charges > 0;
