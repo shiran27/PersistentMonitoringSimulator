@@ -214,6 +214,7 @@ switch m
     case "ED-ORHC-FO-3-bat", p.Policy = "ED-ORHC-FO-3"; p.Agent_profile = "FO-3";
 end
 if startsWith(m, "ED-ORHC"), p = robotLimits(p); end
+if startsWith(m, "ED-"), p.Policy_avoidStations = true; end   % no accidental visits to or charging at stations
 end
 
 function p = robotLimits(p)

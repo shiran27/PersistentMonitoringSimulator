@@ -62,6 +62,8 @@ classdef EDRHCPolicy < Policy
         transit = "FO-0"             % "FO-0", "SO" or "FO-3" (see above)
         speedLimit = Inf             % speed limit of the SO / FO-3 profiles
         accelLimit = Inf             % |acceleration| limit of the SO / FO-3 profiles
+        avoidStations = false        % true: never go to or charge at a charging station (stations are
+                                     % left out of the neighborhood unless every neighbor is one)
         energyWeight = 7.68e-3       % weight of the energy objective int u^2 dt (alpha in eqs. 3
                                      % and 20 of the energy-aware paper): its 213.3e-6 for a
                                      % 600 x 600 space, times 36 for our 100 x 100 canvas;
@@ -115,6 +117,7 @@ classdef EDRHCPolicy < Policy
             % Called when the agent has no path and no dwell left: on arrival (or at t = 0), and
             % when an active or inactive time is over
             cmd = struct();
+            if obj.avoidStations, agent.chargeAllowed = false; end
             s = obj.stateOf(agent);
             if s.stage == "travel"
                 u = obj.solve(1, agent, model, adj, curIdx, simTime);
@@ -158,6 +161,10 @@ classdef EDRHCPolicy < Policy
             if nargin < 7, adj = model.buildAdjacency(); end
             nbrs = find(adj(i, :));
             avail = nbrs(~obj.coveredNeighbors(agent, model, adj, i));
+            if obj.avoidStations   % stations only when there is no other way on
+                st = arrayfun(@(k) isa(model.targets(k), 'ChargingStation'), nbrs);
+                if ~all(st), avail = avail(~ismember(avail, nbrs(st))); end
+            end
             hood = [i, avail];                    % the neighborhood without covered neighbors
             tg = model.targets(hood);
             R = [tg.R];
