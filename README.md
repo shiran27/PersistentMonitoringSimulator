@@ -109,6 +109,8 @@ The experiment harness (`Experiments/runTrial`, `Experiments/trialDefaults.m`) s
 | `agentProfile` | speed profile of each agent: `"FO-0"`, `"SO"` or `"FO-3"` |
 | `agentBatteryWh` | battery capacity of each agent [Wh] (or one value for all) |
 | `agentStopWhenEmpty` | 1 if an agent stops when its battery is empty (or one value for all) |
+| `agentMotorC2`, `agentMaxNormalAccel` | [full power model](#full-power-model-energy-aware-paper): `c2` and the turn limit `a_n` of each agent (saved only when set) |
+| `agentBatteryR0`, `agentBatteryVoc` | battery internal resistance [Ohm] and open-circuit voltage [V] of each agent (saved only when `R0 > 0`) |
 | `chargers`, `chargePower` | targets that are charging stations (`ChargingStation`), and their charging power [W] |
 | `background` | background image (a file in `Configurations/backgrounds/`, the project root, or a full path) |
 | `uncertaintyMode` | one of the modes above |
@@ -131,6 +133,11 @@ matlab -batch "addpath(genpath(pwd)); smokeTest"
 matlab -batch "addpath(genpath(pwd)); assertSuccess(runtests('guiTest'))"
 ```
 Screenshots of each stage are written to `results/gui/` (git-ignored).
+
+`tests/energyModelTest.m` checks the full power model: the defaults change nothing; the SO and FO-3 profiles match Theorems 1-3 and a QP solve (within 0.02%) in every regime; every profile is rest to rest, within its limits and smooth; an Abstract Agent draws the predicted energy with and without battery losses; the turn limit and Lemma 1; and the new settings in `AgentSpec`, layouts and `runTrial`:
+```
+matlab -batch "addpath(genpath(pwd)); energyModelTest"
+```
 
 `tests/extensionTest.m` checks the extension points: switching target types, the metrics and `runTrial`'s `metricValues`, the event-detection example, the Grid A* planner on every map (no wall crossings), smooth paths from every planner, the warning for an unreachable edge, charging stations added and reloaded, the wall check during motion, the names in the paper profiles, and the older profile and policy names:
 ```
@@ -169,18 +176,32 @@ Unset settings keep the type's defaults. One spec serves every place that create
 - **Layouts:** a layout stores each agent's speed, acceleration and profile. The type is always the current selection.
 - **In `runTrial`:**
   - `AgentType` and `AgentSpeed` set the type and speed.
-  - `Agent_<setting>` sets a spec setting (`'Agent_profile', "SO"`, `'Agent_maxAccel', 10`, `'Agent_kp', 16`, `'Agent_batteryWh', 50`).
+  - `Agent_<setting>` sets a spec setting (`'Agent_profile', "SO"`, `'Agent_maxAccel', 10`, `'Agent_kp', 16`, `'Agent_batteryWh', 50`, `'Agent_motorC2', 0.05`, `'Agent_maxNormalAccel', 2`, `'Agent_batteryR0', 0.1`).
   - Any other `Agent_<property>` is set on every agent, its state or controller (e.g. `'Agent_stopWhenEmpty', true`).
 - **In code:** `spec = AgentSpec(Type="Physical Agent", MaxSpeed=10, Profile="SO"); agent = spec.spawn(index, position)`.
 
 **Parts held by every agent, swappable without subclassing:**
 - **Speed profile** (`SpeedProfile`): chosen per transit by a planning policy, or the agent's own `profile`.
 - **Controller** (`TrackingController`): PD tracking with acceleration feedforward. Physical Agents use it; replace `agent.controller` to try another law.
-- **Battery** (`Battery`): capacity and power model, `agent.battery`. Reported as SOC; with `stopWhenEmpty` the agent stops when it is empty.
+- **Battery** (`Battery`): capacity and power model, `agent.battery`. Reported as SOC; with `stopWhenEmpty` the agent stops when it is empty. See [Full power model](#full-power-model-energy-aware-paper) for `c2` and battery losses.
 
 New agent types are subclasses for different platforms (dynamics, limits, sensing), not for profiles; see [New Agent Type](#3-new-agent-type).
 
 **Service.** A target is serviced only by agents at rest there: arrived (no path) or waiting to leave. Agents in transit service nothing, even when they pass close to a target. `ScenarioModel.detectionRadius` (1.2) is only the tolerance for "at the target".
+
+### Full power model (energy-aware paper)
+
+The energy-aware paper (Batch 1 of its simulator specification) uses the DC-motor power model `P = P_m + c1 u^2 + c2 v^2 + c3 v` (Tokekar, Karnad and Isler), with `P_m = P_I` (idle) or `P_M` (moving). The battery's model above is the case `c1 = gammaAcc/eta`, `c3 = alphaVel/eta` and `c2 = 0`. Setting `agent.battery.c2 > 0` (or `AgentSpec(MotorC2=...)`, `'Agent_motorC2'`, layout `agentMotorC2`) switches every agent to the full model. The defaults (`c2 = 0`, no turn limit, no battery losses) reproduce every earlier result bit for bit.
+- **Least-loss profiles** (`SpeedProfile.shape(..., nu)` with `nu = sqrt(c2/c1)`). The agent minimizes the motion loss `L = int (c1 u^2 + c2 v^2) dt`.
+  - SO without active limits is hyperbolic: `v(t) = A (cosh th - cosh(nu (t - rho/2)))` with `th = nu rho/2`, and `L = c1 nu^3 y^2 / (2 (th - tanh th))` (Theorem 1). As `c2 -> 0` it tends to the cubic.
+  - Under a speed limit, hyperbolic arcs reach the limit with `u -> 0`, then the agent cruises (Theorem 2). Under an acceleration limit, `u` stays at the limit at both ends around a hyperbolic middle arc. With both limits, the two combine. Each case keeps `u` continuous.
+  - FO-3 accelerates for the root `tau*` in `(0, rho/3]` of `c2 tau^2 (2 tau - rho) = 3 c1 (3 tau - rho)`, clamped to what the limits allow (Theorem 3).
+  - `SpeedProfile.loss(name, y, rho, vb, ub, c1, c2)` gives `L` (vectorized in `rho`), and `SpeedProfile.integrals(P)` gives `int u^2` and `int v^2` of any profile.
+- **Turn limit** (Assumption A1). `agent.maxNormalAccel` (`a_n`, `Inf` by default) caps a path's speed at `min(maxSpeed, sqrt(a_n / kappa))`, with `kappa` the path's largest curvature (`agent.segmentSpeedLimit(pts)`). `agent.limitTransit(pts)` is the shortest transit within the agent's limits, `y/v + v/u` (Lemma 1).
+- **Energy of a plan.** `[E, Eex] = agent.transitPlanEnergy(pts, rho, name)` gives the battery energy `E = P_M rho + c3 y + L` of the least-loss profile within the agent's limits (`agent.planProfile`), and its excess `Eex = E - P_I rho` over idling, the only part a plan can change. `Battery.planEnergy(P)`, `idleEnergy` and `excessEnergy` work on any profile.
+- **Battery losses.** With `battery.R0 > 0`, the battery delivers `P + beta P^2` with `beta = R0/Voc^2` (first order in the internal resistance). Both `drain` and the plan energies include it, the latter by quadrature along the profile.
+- **Abstract Agents** follow these profiles exactly, so they draw what is predicted (to 0.001% in `energyModelTest`). Physical Agents are unchanged; the energy paper's differential-drive agent is planned.
+- ED-ORHC-SO and ED-ORHC-FO-3 keep the CDC 2021 objective `int u^2`, as validated against the JS simulator.
 
 **Older names.** `"Linear Agent"` (= Abstract, `"FO-0"`), `"Second-Order Agent"` (= Abstract, `"SO"`), `"Default Agent"` and `"Energy Agent"` (= Physical) still work in scripts and layouts, but are not listed in the GUI.
 

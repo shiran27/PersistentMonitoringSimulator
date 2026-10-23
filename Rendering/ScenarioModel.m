@@ -331,6 +331,15 @@ classdef ScenarioModel < handle
             s.agentProfile = arrayfun(@(a) a.profile, obj.agents);           % speed profile per agent
             s.agentBatteryWh = arrayfun(@(a) a.battery.capacityWh, obj.agents);   % battery capacity per agent
             s.agentStopWhenEmpty = arrayfun(@(a) double(a.stopWhenEmpty), obj.agents);  % stops when empty
+            % Full power model and turn limit (energy-aware paper), stored only when set
+            c2 = arrayfun(@(a) a.battery.c2, obj.agents);
+            an = arrayfun(@(a) a.maxNormalAccel, obj.agents);
+            r0 = arrayfun(@(a) a.battery.R0, obj.agents);
+            if any(c2 ~= 0), s.agentMotorC2 = c2; end                        % Battery c2 per agent
+            if any(isfinite(an)), s.agentMaxNormalAccel = an; end            % a_n per agent
+            if any(r0 ~= 0)                                                   % battery losses
+                s.agentBatteryR0 = r0; s.agentBatteryVoc = arrayfun(@(a) a.battery.Voc, obj.agents);
+            end
             st = find(arrayfun(@(t) isa(t, 'ChargingStation'), obj.targets));
             s.chargers = st;                                                  % charging stations (targets)
             s.chargePower = arrayfun(@(k) obj.targets(k).chargePower, st);    % their power [W]
@@ -384,6 +393,10 @@ classdef ScenarioModel < handle
                     if ~isempty(wh), spec.batteryWh = wh; end
                     stop = layoutValue(s, 'agentStopWhenEmpty', k);
                     if ~isempty(stop), spec.stopWhenEmpty = stop; end
+                    for f = ["MotorC2", "MaxNormalAccel", "BatteryR0", "BatteryVoc"]   % full power model
+                        val = layoutValue(s, char("agent" + f), k);
+                        if ~isempty(val), spec.(lower(extractBefore(f, 2)) + extractAfter(f, 1)) = val; end
+                    end
                     obj.addAgentOnTarget(obj.targets(s.agentStarts(k)).position, spec.maxSpeed, 1e-6, spec);
                 end
             end
