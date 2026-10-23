@@ -128,9 +128,11 @@ for k = ["R", "a", "b", "e"]
     m = S5(S5.Method == k & S5.Variant == "", :);
     if ~isempty(m), rowsS5(end+1, :) = {"(" + k + ")", m, ""}; end %#ok<AGROW>
 end
-for d = ["delta 1", "delta 5"]
+for d = ["deadband", "deadband, delta 1", "deadband, delta 5"]
     m = S5(S5.Method == "R" & S5.Variant == d, :);
-    if ~isempty(m), rowsS5(end+1, :) = {"(R), $\delta = " + extractAfter(d, "delta ") + "$ s", m, ""}; end %#ok<AGROW>
+    lbl = "(R), deadband";
+    if contains(d, "delta"), lbl = lbl + ", $\delta = " + extractAfter(d, "delta ") + "$ s"; end
+    if ~isempty(m), rowsS5(end+1, :) = {lbl, m, ""}; end %#ok<AGROW>
 end
 mac = [mac; ablationTable(fullfile(resDir, 'tab_booking.tex'), rowsS5, setups, "Strategy", "Booking", true)];
 % S7
@@ -171,7 +173,7 @@ for q = 1:size(rows, 1)
             cells(end+1) = sprintf('%.0f', 100 * stat(R, m, 'Busy')); %#ok<AGROW>
             cells(end+1) = sprintf('%.3f', mean(R.Messages(m) ./ R.RHCPs(m), 'omitnan')); %#ok<AGROW>
         end
-        lbl = regexprep(rows{q, 1}, '[^A-Za-z]', '');
+        lbl = regexprep(replace(rows{q, 1}, ["0.5", "1", "2", "5"], [" Half ", " One ", " Two ", " Five "]), '[^A-Za-z ]', '');
         mac(end+1) = macro(key + "J" + camel(lbl) + camel(sc), J, '%.0f'); %#ok<AGROW>
     end
     fprintf(fid, '%s & %s \\\\ \\hline\n', rows{q, 1}, strjoin(cells, ' & '));

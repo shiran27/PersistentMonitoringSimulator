@@ -7,7 +7,8 @@ function out = energyExperiments(mode, opts)
 %                unlimited batteries) and ED-ORHC-SO/-FO-3 (unlimited, and with batteries)
 %   S3 forms     EA-SO: ratio and alphaH (at alpha_H = omega~/w_bar of the dinkelbach pilot, x0.5, x2)
 %   S4 terminal  EA-SO: terminal "hhat" and "none" (S2 has "alpha")
-%   S5 booking   EA-SO: strategies R, a, b, e; R with delta = 1 s and 5 s
+%   S5 booking   EA-SO: strategies R (without and with the one-slot report deadband), a, b, e;
+%                R with the deadband at delta = 1 s and 5 s
 %   S6 stations  Energy_Sweep_m<1|2>_n<2..6> with P_c at 0.8 to 2 times ceil(n/m) P_I
 %   S7 charging  Battery1RC: constant power, CC-CV, CC-CV with a tail slot, swapping (60 s)
 %   S8 physical  DiffDrive agents without margins, then with margins from their largest errors
@@ -125,10 +126,12 @@ for sc = setups, for s = seeds5
     for k = strategies
         add("S5", sc, k, s, "", method("EA-SO", base(sc, T, s), k));
     end
+    p = method("EA-SO", base(sc, T, s), "R"); p.Policy_reportDeadband = 1;
+    add("S5", sc, "R", s, "deadband", p);
     for d = [1 5]
         if opts.Quick && d == 5, continue; end
-        p = method("EA-SO", base(sc, T, s), "R"); p.Policy_messageDelay = d;
-        add("S5", sc, "R", s, sprintf("delta %g", d), p);
+        p = method("EA-SO", base(sc, T, s), "R"); p.Policy_reportDeadband = 1; p.Policy_messageDelay = d;
+        add("S5", sc, "R", s, sprintf("deadband, delta %g", d), p);
     end
 end, end
 % S6: stations (P_c in units of Lemma 4's bound ceil(n/m) P_I, at least P_I + 10 W)

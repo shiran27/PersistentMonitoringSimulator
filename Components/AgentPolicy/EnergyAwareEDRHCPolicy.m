@@ -57,6 +57,11 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
     %    and at its slot's end it may stay for the next slot on its dock if that is free and still
     %    worth it. A tail yields to an agent booked next on the dock that waits to start early
     %    (rule (v)), so Lemma 4 keeps the plain t_s.
+    % 6. Docks and stations (after the office diagnosis). Fill-in charging (fillIn): an agent
+    %    waiting at its station charges on any idle dock until the next slot booked on that dock
+    %    (or until full), then books again nearest its new predicted need. Station exit: an agent
+    %    at a station whose neighbors are all covered heads for the nearest uncovered target,
+    %    passing through covered ones, instead of waiting there.
     % mu_a weights each target's d hhat_k/d delta_k by the agent's share of its recent visits
     % (priceShare). Stations charge only the agents in their slots (Agent.chargeAllowed is false
     % otherwise, also for an agent dwelling at a station).
@@ -105,6 +110,13 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                                        % (the home booking is released after the grant)
         tailSlot = false               % CC-CV: leave by the marginal value theorem, and stay for the
                                        % next slot on the dock if it is free and worth it (Sec. 6.11)
+        fillIn = true                  % an agent waiting at its station charges on any idle dock until
+                                       % the next slot booked there, then books again
+        minFill = 10                   % shortest fill-in worth starting [s]
+        stationExit = true             % from a station with every neighbor covered, head for the nearest
+                                       % uncovered target through covered ones
+        reportDeadband = 0             % "R": re-report only when g_need moved by more than this many slots
+                                       % (or the booking left the window)
         earlyStart = true              % work-conserving docks: a booked agent at its station starts
                                        % charging as soon as its dock is idle and no other booking on
                                        % it comes first (its session still ends by its own slot's end)
@@ -165,6 +177,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         tails                          % agent index -> struct(station, dock, slot) of its tail slot
         leftAt                         % agent index -> time it left the targets for its station
         lastE                          % agent index -> [time, energy left] at its last step charging
+        chargeDock                     % agent index -> dock it charges on
+        exitDest                       % agent index -> target it heads for through covered ones
+        lastReport                     % "R": agent index -> g_need of its last report
     end
 
     methods
@@ -188,6 +203,15 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.note(1, agent, i, simTime);
             cmd = struct();
             switch obj.modeOf(agent)
+                case "exit"
+                    if obj.mustLeave(agent, i, simTime)   % its slot first
+                        cmd = obj.goStation(agent, model, i, simTime);
+                        return;
+                    end
+                    cmd = obj.exitHop(agent, model, adj, i, simTime);
+                    if isempty(fieldnames(cmd))   % reached an uncovered target: monitor from here
+                        cmd = plan@EDRHCPolicy(obj, agent, model, adj, i, simTime);
+                    end
                 case "toStation"
                     cmd = obj.goStation(agent, model, i, simTime);
                 case "waiting"
@@ -204,6 +228,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                         cmd = obj.goStation(agent, model, i, simTime);
                     elseif obj.mustLeave(agent, i, simTime)
                         cmd = obj.goStation(agent, model, i, simTime);
+                    elseif obj.atStationAllCovered(agent, model, adj, i)
+                        cmd = obj.exitHop(agent, model, adj, i, simTime);
+                        if isempty(fieldnames(cmd)), cmd = plan@EDRHCPolicy(obj, agent, model, adj, i, simTime); end
                     else
                         cmd = plan@EDRHCPolicy(obj, agent, model, adj, i, simTime);
                     end
@@ -214,6 +241,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             % Time in each mode (modeTime); covering events re-solve dwells only while monitoring
             if isKey(obj.lastStep, agent.index)
                 k = find(obj.modeOf(agent) == ["monitor", "toStation", "waiting", "charging"]);
+                if isempty(k), k = 1; end   % "exit": moving between targets
                 if size(obj.modeTime, 1) < agent.index, obj.modeTime(agent.index, 4) = 0; end
                 obj.modeTime(agent.index, k) = obj.modeTime(agent.index, k) + simTime - obj.lastStep(agent.index);
             end
@@ -228,6 +256,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             end
             if obj.modeOf(agent) == "waiting" && obj.earlyStart
                 obj.tryEarlyStart(agent, model, simTime);
+            end
+            if obj.modeOf(agent) == "waiting" && obj.fillIn
+                obj.tryFillIn(agent, model, simTime);
             end
             if obj.modeOf(agent) == "charging"
                 bat = agent.battery;
@@ -388,6 +419,10 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         function cmd = depart(obj, agent, model, adj, i, simTime)
             % RHCP3, or the way to the station when no uncovered neighbor is affordable; the
             % agent follows the planned profile within its own limits
+            if obj.atStationAllCovered(agent, model, adj, i)
+                cmd = obj.exitHop(agent, model, adj, i, simTime);
+                if ~isempty(fieldnames(cmd)), return; end
+            end
             [affordable, uncovered] = obj.canAffordNeighbor(agent, model, adj, i, simTime);
             if ~isempty(obj.activeBooking(agent)) && uncovered && ~affordable
                 % Uncovered neighbors, none affordable: go now if an earlier free slot can be
@@ -404,6 +439,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                     cmd = struct();
                     obj.wantsEarlier(agent.index) = true;   % first in line for freed time
                     obj.note(3, agent, i, simTime);
+                    obj.stats.d2Dwells = obj.stats.d2Dwells + 1;
+                    obj.stats.d2Time = obj.stats.d2Time + (latest - simTime);
                     obj.dwell(agent, model, adj, i, "inactive", latest - simTime, true);
                 end
                 return;
@@ -429,7 +466,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 other = model.agents(b);
                 if other == agent, continue; end
                 k = other.current_target_idx;
-                if obj.modeOf(other) ~= "monitor" && ~isa(model.targets(k), 'ChargingStation'), continue; end
+                if obj.modeOf(other) == "exit" && isKey(obj.exitDest, other.index), k = obj.exitDest(other.index); end
+                if ~any(obj.modeOf(other) == ["monitor", "exit"]) && ~isa(model.targets(k), 'ChargingStation'), continue; end
                 covered = covered | nbrs == k;
             end
         end
@@ -462,6 +500,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.tails = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.leftAt = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.lastE = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.chargeDock = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.exitDest = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.lastReport = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.modeTime = zeros(0, 4);
             obj.homes = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.grids = containers.Map('KeyType', 'double', 'ValueType', 'any');
@@ -476,6 +517,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 'reports', 0, 'proposals', 0, 'commits', 0, 'cancels', 0, ...   % "R"'s protocol
                 'plans', 0, 'planMean', 0, 'muEMean', 0, ...         % committed plans: mean length, mean hhat_E price
                 'tails', 0, 'preempted', 0, ...                      % tail slots taken and yielded
+                'fillIns', 0, 'exits', 0, ...                        % fill-in sessions; exits from stations
+                'd2Dwells', 0, 'd2Time', 0, ...                      % dwells to the latest departure: count, planned s
                 'bookingChanges', 0, ...                            % bookings made, moved and released
                 'messages', 0, 'relays', 0);                        % end-to-end messages; their relay hops
             obj.rows = containers.Map('KeyType', 'double', 'ValueType', 'any');
@@ -683,6 +726,12 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 obj.messageDelay + obj.marginT;
             need = t + (bat.remaining - obj.socMin * bat.capacity - obj.routes.D(best.j, col)) / obj.meanPower(agent, t);
             if obj.bookingStrategy == "R"
+                if obj.reportDeadband > 0 && isKey(obj.lastReport, agent.index) && ...
+                        abs(need - obj.lastReport(agent.index)) <= obj.reportDeadband * b.length && ...
+                        b.start >= earliest - 1e-9 && b.start <= latest + 1e-9
+                    return;   % the need moved by less than the deadband: no new report
+                end
+                obj.lastReport(agent.index) = need;
                 obj.send("report", agent.index, struct('e', earliest, 'l', latest, 'need', need, ...
                     'mu', obj.hood.mu), t, i, b.station);
                 obj.stats.reports = obj.stats.reports + 1;
@@ -1109,12 +1158,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 end
                 return;
             end
-            for o = model.agents(:)'
-                if o.index ~= agent.index && obj.modeOf(o) == "charging" && isKey(obj.bookings, o.index)
-                    ob = obj.bookings(o.index);
-                    if ob.station == b.station && ob.dock == b.dock, return; end
-                end
-            end
+            if obj.dockInUse(model, agent, b.station, b.dock), return; end
             obj.startCharging(agent, model, b.station, t);
         end
 
@@ -1285,6 +1329,124 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.noteDeparture(agent, model, i, t);
         end
 
+        function tf = dockInUse(obj, model, agent, s, d)
+            % Does another agent charge on dock d of station s now?
+            tf = false;
+            for o = model.agents(:)'
+                if o.index == agent.index || obj.modeOf(o) ~= "charging" || ~isKey(obj.chargeDock, o.index), continue; end
+                cd = obj.chargeDock(o.index);
+                if cd(1) == s && cd(2) == d, tf = true; return; end
+            end
+        end
+
+        function tryFillIn(obj, agent, model, t)
+            % Fill-in charging: on any idle dock whose current slot is free, until the next slot
+            % booked there by another agent (or until full), if that is at least minFill away; the
+            % cells it uses are held, and its own booking stays until it books again
+            b = obj.bookings(agent.index); s = b.station; G = obj.grids(s); len = b.length;
+            kNow = max(floor(t / len + 1e-9), 0);
+            best = [0, -Inf];   % dock, end of the fill-in
+            for d = 1:size(G, 1)
+                if kNow + 1 > size(G, 2) || obj.dockInUse(model, agent, s, d), continue; end
+                row = G(d, kNow + 1:end);
+                other = row ~= 0 & row ~= agent.index;
+                if other(1), continue; end
+                k = find(other, 1);
+                if isempty(k), fillEnd = Inf; else, fillEnd = (kNow + k - 1) * len - 2 * obj.stepSize; end   % off before it
+                if fillEnd > best(2), best = [d, fillEnd]; end
+            end
+            if best(1) == 0 || best(2) - t < obj.minFill, return; end
+            d = best(1); fillEnd = best(2);
+            st = model.targets(s); bat = agent.battery;
+            toFull = bat.energyUsed / max(st.chargePower - bat.idleDraw(), eps);
+            if st.swapTime > 0, toFull = st.swapTime; elseif isa(bat, 'Battery1RC'), toFull = Inf; end
+            stop = min(fillEnd, t + toFull);
+            kEnd = min(ceil(stop / len - 1e-9), size(G, 2));
+            cells = G(d, kNow + 1:kEnd);
+            G(d, kNow + find(cells == 0)) = agent.index;   % hold the cells it uses
+            obj.grids(s) = G;
+            obj.note(5, agent, s, t);
+            obj.modes(agent.index) = "charging";
+            agent.chargeAllowed = true;
+            obj.charges = obj.charges + 1;
+            obj.lastE(agent.index) = [t, bat.remaining];
+            obj.chargeDock(agent.index) = [s, d];
+            agent.dwellRemaining = max(stop - t, 1e-3);
+            obj.sessions(end+1) = struct('agent', agent.index, 'station', s, 'dock', d, 'slot', b.start, ...
+                'slotEnd', stop, 'arrive', b.arrive, 'start', t, 'stop', NaN, 'Ein', bat.remaining, 'Eout', NaN);
+            obj.stats.fillIns = obj.stats.fillIns + 1;
+        end
+
+        function tf = atStationAllCovered(obj, agent, model, adj, i)
+            % Is the agent at a station whose monitoring neighbors are all covered?
+            tf = false;
+            if ~obj.stationExit || ~isa(model.targets(i), 'ChargingStation'), return; end
+            nbrs = find(adj(i, :));
+            mon = ~arrayfun(@(j) isa(model.targets(j), 'ChargingStation'), nbrs);
+            if ~any(mon), return; end
+            cov = obj.coveredNeighbors(agent, model, adj, i);
+            tf = all(cov(mon));
+        end
+
+        function cmd = exitHop(obj, agent, model, adj, i, t)
+            % Station exit: one edge toward the nearest uncovered target (by travel time), through
+            % covered ones; an empty cmd once the agent stands on an uncovered target
+            cmd = struct();
+            n = numel(model.targets);
+            covered = false(1, n);
+            for o = model.agents(:)'
+                if o.index == agent.index, continue; end
+                k = o.current_target_idx;
+                if obj.modeOf(o) == "exit" && isKey(obj.exitDest, o.index), k = obj.exitDest(o.index); end
+                if ~isempty(k), covered(k) = true; end
+            end
+            station = arrayfun(@(tg) isa(tg, 'ChargingStation'), model.targets);
+            if ~station(i) && ~covered(i)   % here: monitor
+                if isKey(obj.exitDest, agent.index), remove(obj.exitDest, agent.index); end
+                obj.modes(agent.index) = "monitor";
+                return;
+            end
+            % Dijkstra over the edges by travel time at the agent's top speed
+            W = inf(n); A = adj | adj';
+            for a = 1:n
+                for b = find(A(a, :))
+                    if a < b
+                        W(a, b) = sum(vecnorm(diff(model.findEdge(a, b).curvePoints, 1, 1), 2, 2)) / agent.state.maxSpeed;
+                        W(b, a) = W(a, b);
+                    end
+                end
+            end
+            dist = inf(1, n); prev = zeros(1, n); done = false(1, n); dist(i) = 0;
+            for it = 1:n
+                dd = dist; dd(done) = Inf; [m, u] = min(dd);
+                if ~isfinite(m), break; end
+                done(u) = true;
+                for v = find(isfinite(W(u, :)))
+                    if dist(u) + W(u, v) < dist(v), dist(v) = dist(u) + W(u, v); prev(v) = u; end
+                end
+            end
+            cand = find(~station & ~covered & isfinite(dist));
+            cand = cand(cand ~= i);
+            if isempty(cand)   % every target covered: stay (ED-RHC's hold and retry)
+                if isKey(obj.exitDest, agent.index), remove(obj.exitDest, agent.index); end
+                obj.modes(agent.index) = "monitor";
+                return;
+            end
+            [~, q] = min(dist(cand)); dest = cand(q);
+            nxt = dest;
+            while prev(nxt) ~= i, nxt = prev(nxt); end
+            if obj.modeOf(agent) ~= "exit", obj.stats.exits = obj.stats.exits + 1; end
+            obj.modes(agent.index) = "exit";
+            obj.exitDest(agent.index) = dest;
+            obj.forgetAgent(agent.index);
+            cmd = struct('kind', "move", 'targetIdx', nxt);
+            pts = model.findEdge(i, nxt).curvePoints;
+            agent.transitTime = max(agent.limitTransit(pts), sum(vecnorm(diff(pts, 1, 1), 2, 2)) / agent.state.maxSpeed);
+            agent.transitProfile = obj.transit;
+            agent.transitLimits = [agent.segmentSpeedLimit(pts), agent.state.maxAccel];
+            obj.noteDeparture(agent, model, i, t);
+        end
+
         function ok = extendTail(obj, agent, i, t)
             % tailSlot, at the end of a slot: stay for the next slot on the dock if it is free, the
             % battery is not full, and charging is still worth it (the marginal value theorem)
@@ -1345,6 +1507,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 toFull = Inf;          % CC-CV: until the charger reports it full (onStep)
             end
             obj.lastE(agent.index) = [t, agent.battery.remaining];
+            obj.chargeDock(agent.index) = [b.station, b.dock];
             agent.dwellRemaining = max(min(b.start + b.length - t, toFull), 1e-3);
             obj.sessions(end+1) = struct('agent', agent.index, 'station', i, 'dock', b.dock, ...
                 'slot', b.start, 'slotEnd', b.start + b.length, 'arrive', b.arrive, 'start', t, 'stop', NaN, ...
@@ -1359,11 +1522,13 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             end
             obj.unbook(agent);
             if isKey(obj.tails, agent.index), remove(obj.tails, agent.index); end
+            if isKey(obj.chargeDock, agent.index), remove(obj.chargeDock, agent.index); end
             obj.modes(agent.index) = "monitor";
             agent.chargeAllowed = false;
             obj.lastCharge(agent.index) = [t, agent.battery.remaining];
             obj.book(agent, model, i, t, t);
             if obj.bookingStrategy == "R"   % the new window, from the station
+                if isKey(obj.lastReport, agent.index), remove(obj.lastReport, agent.index); end
                 b = obj.bookings(agent.index); bat = agent.battery; col = obj.stationColumn(b.station);
                 mu = obj.lastMuOf(agent);
                 obj.send("report", agent.index, struct('e', t + obj.routes.T(i, col) + obj.messageDelay + obj.marginT, ...
