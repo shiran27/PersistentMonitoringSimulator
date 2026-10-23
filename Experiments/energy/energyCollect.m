@@ -17,7 +17,7 @@ T = cell2table(rows, 'VariableNames', {'Id', 'Study', 'Scenario', 'Method', 'See
     'Energy', 'MinSoc', 'Charges', 'Wait', 'Share', 'Gap', 'Messages', 'Relays', 'RHCPs', 'Changes', ...
     'Busy', 'TrueMinSoc', 'Violations', 'Delays', 'SocErrMax', 'Seconds'});
 writetable(T, fullfile(resDir, 'runs.csv'));
-mac = strings(0, 1);
+mac = setupMacros();
 mac = [mac; tableMain(T, resDir)];
 mac = [mac; tableAblations(T, resDir)];
 mac = [mac; stationsFigure(L, runDir, resDir)];
@@ -46,8 +46,8 @@ end
 
 function n = camel(s)
 % A macro-safe CamelCase name (letters only)
-s = replace(string(s), ["FO-3", "FO-0", "-bat", "Energy_", "_1Dock", "_2Docks", "_2Stations", "-", "_", " "], ...
-    ["FoThree", "FoZero", "Bat", "", "One", "Two", "", " ", " ", " "]);
+s = replace(string(s), ["FO-3", "FO-0", "-bat", "Energy_", "_1Dock", "_2Docks", "_2Stations", "-", "_"], ...
+    [" Fo Three", " Fo Zero", " Bat", "", " One", " Two", "", " ", " "]);
 w = split(lower(s));
 w = w(w ~= "");
 n = strjoin(upper(extractBefore(w, 2)) + extractAfter(w, 1), "");
@@ -61,6 +61,45 @@ if isempty(x), mu = NaN; lo = NaN; hi = NaN; end
 end
 
 % ------------------------------------------------------------------------------------------
+function mac = setupMacros()
+% The setups' numbers quoted in Sec. VII: targets (stations not counted), agents, stations and
+% docks, the map (the 100 m x 100 m canvas; for the office also the building's walls), the robots'
+% P_I and P_M (with and without the battery's loss beta P^2), capacity, reserve, station power
+% and the slot t_s = (Q - E_min)/(P_c - P_I) with the losses (ChargingStation.slotLength)
+root = fileparts(which('MainUI'));
+mac = strings(0, 1);
+for f = ["Energy_Office_1Dock", "Energy_Campus_2Stations"]
+    s = load(fullfile(root, 'Configurations', 'Energy', f + ".mat"), 's').s;
+    model = ScenarioModel(DijkstraCornerPlanner()); model.importLayout(s);
+    st = model.targets(arrayfun(@(t) isa(t, 'ChargingStation'), model.targets));
+    key = replace(f, ["Energy_Office_1Dock", "Energy_Campus_2Stations"], ["Office", "Campus"]);
+    mac(end+1, 1) = macro(key + "Targets", numel(model.targets) - numel(st), '%d');
+    mac(end+1, 1) = macro(key + "Agents", numel(model.agents), '%d');
+    mac(end+1, 1) = macro(key + "Stations", numel(st), '%d');
+    mac(end+1, 1) = macro(key + "Docks", st(1).docks, '%d');
+    mac(end+1, 1) = macro(key + "Width", 100, '%d');
+    mac(end+1, 1) = macro(key + "Height", 100, '%d');
+    if key == "Office"
+        W = s.walls;
+        mac(end+1, 1) = macro("OfficeBuildingWidth", max([W(:, 1); W(:, 3)]) - min([W(:, 1); W(:, 3)]), '%.0f');
+        mac(end+1, 1) = macro("OfficeBuildingHeight", max([W(:, 2); W(:, 4)]) - min([W(:, 2); W(:, 4)]), '%.0f');
+        a = model.agents(1); b = a.battery;
+        mac(end+1, 1) = macro("PI", b.idlePower(), '%.1f');
+        mac(end+1, 1) = macro("PILoss", b.idleDraw(), '%.2f');
+        mac(end+1, 1) = macro("PM", b.movePower(), '%.1f');
+        mac(end+1, 1) = macro("CapacityWh", b.capacityWh, '%g');
+        mac(end+1, 1) = macro("CapacityKJ", b.capacity / 1000, '%.1f');
+        mac(end+1, 1) = macro("SocMinPct", 10, '%d');
+        mac(end+1, 1) = macro("StationPower", st(1).chargePower, '%g');
+        mac(end+1, 1) = macro("SlotLength", st(1).slotLength(a, 0.1), '%.0f');
+        mac(end+1, 1) = macro("RobotSpeed", a.state.maxSpeed, '%g');
+        mac(end+1, 1) = macro("RobotAccel", a.state.maxAccel, '%g');
+        mac(end+1, 1) = macro("BatteryRZero", b.R0, '%g');
+        mac(end+1, 1) = macro("BatteryVoc", b.Voc, '%g');
+    end
+end
+end
+
 function mac = tableMain(T, resDir)
 % S2: per setup and method, J_T mean [min, max] over the seeds, energy, lowest SOC, charges, mean
 % wait, monitoring share and messages per RHCP; the macros give the means
