@@ -262,8 +262,18 @@ end
 
 function oneRun(id, p, info, runDir)
 % One run, saved as runs/<id>.mat: J and its time course, SOC, energy and visits over time, the
-% metrics, the policy's statistics, and DiffDrive agents' transit and SOC-estimate records
-tic; o = runTrial(p); sec = toc;
+% metrics, the policy's statistics, and DiffDrive agents' transit and SOC-estimate records. A run
+% that errors is saved as runs/<id>_error.mat (the others go on; a rerun tries it again)
+tic;
+try
+    o = runTrial(p);
+catch err
+    save(fullfile(runDir, sprintf('%04d_error.mat', id)), 'err', 'p');
+    fprintf('%4d %-3s %-24s %-16s %2d %-10s ERROR: %s\n', id, info.Study, info.Scenario, info.Method, ...
+        info.Seed, info.Variant, err.message);
+    return;
+end
+sec = toc;
 L = o.log; every = max(1, round(10 / L.dt));   % every 10 s
 pol = o.policy; ags = o.model.agents;
 r = struct('id', id, 'study', info.Study, 'scenario', info.Scenario, 'method', info.Method, ...
