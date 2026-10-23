@@ -61,6 +61,7 @@ The **Scenario** dropdown (top of the Tools panel; `MainUI.loadScenario(name)` i
 | Campus | `Campus.mat` | Zoomed-out building complex: six buildings and a pond (obstacles), quad, parking; 11 sites, 5 agents |
 | Museum (event detection example) | `Museum.mat` | The beginner's example: four galleries around a hall, event targets (`SimpleTarget`), 3 robots at speed 4; every wall and target on the GUI's click grid |
 | JS: ... | `Legacy/JS_*.mat` | The eight presets of the legacy JS simulator (RHC papers), scaled to the canvas |
+| Energy: ... | `Energy/Energy_*.mat` | The energy-aware paper's setups (`makeEnergyLayouts`): the office floor with a 1-dock or 2-dock station and 3 robots, and the campus with two 2-dock stations and 6 robots; 120 W stations, robots at 1 m/s with the [full power model](#full-power-model-energy-aware-paper) and 6 Wh batteries |
 
 `Configurations/scenarioCatalog.m` lists them. `Configurations/makeScenarioLayouts.m` draws the maps (`Configurations/backgrounds/*.png`) and writes their layouts from the same geometry, so walls line up with the drawn walls, buildings, coasts and piers. It also restyles the lab floor plan (`LabLayout.png`) in the same palette as `backgrounds/LabFloor.png`. Edit it to change a scenario, or add a row to the catalog for a new layout file.
 
@@ -73,7 +74,7 @@ The **Paper profile** dropdown (top of the Tools panel; `MainUI.setPaperProfile(
 | Full | Everything |
 | Simulator paper | Random Walk, ED-RHC, ED-ORHC-SO, ED-ORHC-FO-3, Battery-Aware ED-RHC and the example's classes; Abstract and Physical Agents; every planner, metric and scenario |
 | Collaboration paper | ED-RHC and Collab-ED-RHC with Abstract Agents on FO-0 transits; the JS presets, the "Collab: ..." setups and the Lab floor, Office floor, City patrol, Harbor patrol and Campus maps; J(t) |
-| Energy paper | ED-ORHC-SO, ED-ORHC-FO-3 and Battery-Aware ED-RHC; Abstract and Physical Agents with SO and FO-3 profiles; J(t) and Minimum SOC |
+| Energy paper | ED-ORHC-SO, ED-ORHC-FO-3 and Battery-Aware ED-RHC; Abstract and Physical Agents with SO and FO-3 profiles; the "Energy: ..." setups and the Lab floor; J(t) and Minimum SOC |
 
 A profile only filters the dropdowns: when it hides the current choice, the first shown one is selected, and a loaded layout still shows the options it uses. The registry, layouts and `runTrial` ignore profiles, so no result depends on one. To add a profile, add a row to `paperProfiles.m`; a field left empty shows everything of that kind, and a scenario entry ending in `*` matches every scenario whose name starts with the rest (e.g. `"JS: *"`). `extensionTest` checks that every listed name exists.
 
@@ -109,9 +110,10 @@ The experiment harness (`Experiments/runTrial`, `Experiments/trialDefaults.m`) s
 | `agentProfile` | speed profile of each agent: `"FO-0"`, `"SO"` or `"FO-3"` |
 | `agentBatteryWh` | battery capacity of each agent [Wh] (or one value for all) |
 | `agentStopWhenEmpty` | 1 if an agent stops when its battery is empty (or one value for all) |
-| `agentMotorC2`, `agentMaxNormalAccel` | [full power model](#full-power-model-energy-aware-paper): `c2` and the turn limit `a_n` of each agent (saved only when set) |
+| `agentMotorC1`, `agentMotorC2`, `agentMotorC3`, `agentMaxNormalAccel` | [full power model](#full-power-model-energy-aware-paper): `c1`, `c2`, `c3` and the turn limit `a_n` of each agent (saved only when set) |
 | `agentBatteryR0`, `agentBatteryVoc` | battery internal resistance [Ohm] and open-circuit voltage [V] of each agent (saved only when `R0 > 0`) |
 | `chargers`, `chargePower` | targets that are charging stations (`ChargingStation`), and their charging power [W] |
+| `chargerDocks` | number of docks of each station (saved only when limited) |
 | `background` | background image (a file in `Configurations/backgrounds/`, the project root, or a full path) |
 | `uncertaintyMode` | one of the modes above |
 | `A`, `B`, `R0` | per-target `A_i`, `B_i`, `R_i(0)` (`n x 1`, or one value for all) |
@@ -134,7 +136,7 @@ matlab -batch "addpath(genpath(pwd)); assertSuccess(runtests('guiTest'))"
 ```
 Screenshots of each stage are written to `results/gui/` (git-ignored).
 
-`tests/energyModelTest.m` checks the full power model: the defaults change nothing; the SO and FO-3 profiles match Theorems 1-3 and a QP solve (within 0.02%) in every regime; every profile is rest to rest, within its limits and smooth; an Abstract Agent draws the predicted energy with and without battery losses; the turn limit and Lemma 1; and the new settings in `AgentSpec`, layouts and `runTrial`:
+`tests/energyModelTest.m` checks the full power model and the stations: the defaults change nothing; the SO and FO-3 profiles match Theorems 1-3 and a QP solve (within 0.02%) in every regime; every profile is rest to rest, within its limits and smooth; an Abstract Agent draws the predicted energy with and without battery losses; the turn limit and Lemma 1; the new settings in `AgentSpec`, layouts and `runTrial`; docks and slots; the energy-optimal transit (Proposition 2); route tables equal to shortest paths; home stations; and the energy layouts:
 ```
 matlab -batch "addpath(genpath(pwd)); energyModelTest"
 ```
@@ -202,6 +204,9 @@ The energy-aware paper (Batch 1 of its simulator specification) uses the DC-moto
 - **Battery losses.** With `battery.R0 > 0`, the battery delivers `P + beta P^2` with `beta = R0/Voc^2` (first order in the internal resistance). Both `drain` and the plan energies include it, the latter by quadrature along the profile.
 - **Abstract Agents** follow these profiles exactly, so they draw what is predicted (to 0.001% in `energyModelTest`). Physical Agents are unchanged; the energy paper's differential-drive agent is planned.
 - ED-ORHC-SO and ED-ORHC-FO-3 keep the CDC 2021 objective `int u^2`, as validated against the JS simulator.
+- **Stations with docks** (Sec. 6.2). `ChargingStation.docks` (`m_sigma`, `Inf` by default: every agent at rest charges) limits the agents charging at once; an agent at rest takes a free dock first come, first served and holds it until it leaves. `station.slotLength(agent, socMin)` is the slot `t_s = (Q - E_min)/(P_c - P_I)`, a full charge from the reserve. `model.addStation(pos, power, docks)`; layout field `chargerDocks`.
+- **Route tables** (Sec. 6.1, Lemma 2). `R = RouteTable(model, agent)` gives, for every node and station, the least excess route energy `R.D`, the route time `R.T` and the next node `R.next` (`R.route(k, station)` lists the nodes). An edge weighs its least excess energy `min E^ex(rho)` over `rho >= limitTransit`, at the energy-optimal transit time `R.edgeTime` (Proposition 2). The tables come from a synchronous distributed Bellman-Ford, whose cost is in `R.rounds` and `R.messages`.
+- **Home stations.** `[home, util, ok] = R.homeStations(model, starts, agent, Pbar)` balances the stations' utilization `n_sigma Pbar/(m_sigma (P_c - P_I))` and then matches agents to stations for the least total route energy from their start nodes; `ok` reports Lemma 4's condition `P_c >= ceil(n_sigma/m_sigma) P_I`.
 
 **Older names.** `"Linear Agent"` (= Abstract, `"FO-0"`), `"Second-Order Agent"` (= Abstract, `"SO"`), `"Default Agent"` and `"Energy Agent"` (= Physical) still work in scripts and layouts, but are not listed in the GUI.
 

@@ -14,6 +14,10 @@ function energyModelTest()
 % 6. An Abstract Agent with c2 > 0 and battery losses draws the energy predicted for its plan.
 % 7. The curvature speed limit (Assumption A1) and the shortest transit (Lemma 1).
 % 8. AgentSpec, runTrial (Agent_motorC2, ...) and layouts carry the new settings.
+% 9. Stations (Batch 2): docks limit the agents charging at once (first come, first served),
+%    the slot length; the energy-optimal edge transit (Proposition 2); route tables equal to
+%    shortest paths, with consistent routes and times; home stations that balance utilization
+%    with the least route energy; the energy layouts of makeEnergyLayouts.
 % The QP checks need quadprog (Optimization Toolbox); an expired MOSEK toolbox that shadows it
 % is taken off the path for this test. Prints one line per check and errors at the end
 % (non-zero exit under -batch) if any failed.
@@ -169,6 +173,61 @@ base = runTrial(t);
 check(sum(out.metrics.Energy) > sum(base.metrics.Energy) && out.finalJ == base.finalJ, sprintf(['runTrial ' ...
     'Agent_motorC2 / Agent_batteryR0: energy %.1f kJ against %.1f kJ, same J'], sum(out.metrics.Energy) / 1000, ...
     sum(base.metrics.Energy) / 1000));
+
+% ---- 9. Stations, route tables and home stations ----
+st = ChargingStation(1, [0 0], 120); st.docks = 1;
+a1 = AbstractAgent(1, [0 0], 1); a2 = AbstractAgent(2, [0 0], 1);
+a1.battery.energyUsed = 5000; a2.battery.energyUsed = 5000;
+st.residingAgents = [a1 a2]; st.updateUncertainty(1);
+first = [a1.battery.energyUsed, a2.battery.energyUsed];
+st.residingAgents = a2; st.updateUncertainty(1);
+check(isequal(first, [4880 5000]) && a2.battery.energyUsed == 4880 && st.dockTime == 2, ...
+    'a 1-dock station charges one agent at a time, first come, first served');
+check(abs(st.slotLength(a1, 0.1) - 0.9 * 26 * 3600 / (120 - a1.battery.idlePower())) < 1e-9, ...
+    'slot length t_s = (Q - E_min)/(P_c - P_I)');
+a = AbstractAgent(1, [0 0], 100, Profile="SO"); a.state.maxAccel = 100;
+[~, rhoE] = RouteTable.edgeOptimum(a, [0 0; 10 0]);
+dP = a.battery.movePower() - a.battery.idlePower();
+check(abs(rhoE / (36 * a.battery.c1 * 100 / dP)^0.25 - 1) < 1e-5, sprintf(['energy-optimal transit, c2 = 0: ' ...
+    'rho_E %.4f s = (36 c1 y^2/dP)^(1/4) (Proposition 2)'], rhoE));
+a.battery.c2 = 1.16; a.battery.gammaAcc = 17.75 * a.battery.eta;
+[~, rhoE] = RouteTable.edgeOptimum(a, [0 0; 10 0]);
+nu = a.motionNu(); th = nu * rhoE / 2;
+check(abs(a.battery.c1 * nu^4 * 100 * tanh(th)^2 / (4 * (th - tanh(th))^2) / dP - 1) < 1e-4, ...
+    sprintf('energy-optimal transit, c2 = 1.16: rho_E %.3f s solves Proposition 2''s condition', rhoE));
+makeEnergyLayouts();
+cat = scenarioCatalog();
+for name = cat.Name(startsWith(cat.Name, "Energy:"))'
+    lay = load(cat.File(cat.Name == name), 's');
+    m = ScenarioModel(DijkstraCornerPlanner()); m.importLayout(lay.s);
+    ag = m.agents(1); R = RouteTable(m, ag);
+    W = R.edgeEnergy; W(~isfinite(W)) = 0;
+    dd = distances(graph(W), R.stations)';
+    ok = max(abs(dd - R.D), [], 'all') < 1e-9 * max(R.D(:)) && R.rounds <= numel(m.targets);
+    for k = 1:numel(m.targets)          % each route's energy and time add up along its edges
+        for sIdx = 1:numel(R.stations)
+            r = R.route(k, R.stations(sIdx)); idx = sub2ind(size(W), r(1:end-1), r(2:end));
+            ok = ok && abs(sum(R.edgeEnergy(idx)) - R.D(k, sIdx)) < 1e-6 && abs(sum(R.edgeTime(idx)) - R.T(k, sIdx)) < 1e-6;
+        end
+    end
+    starts = [m.agents.initialTargetIdx];
+    [home, util, lemma4] = R.homeStations(m, starts, ag, 30);
+    n = arrayfun(@(sg) nnz(home == sg), R.stations);
+    best = Inf;                          % brute force: the least route energy with these counts
+    for c = unique(perms(repelem(R.stations, n)), 'rows')'
+        best = min(best, sum(R.D(sub2ind(size(R.D), starts, arrayfun(@(sg) find(R.stations == sg), c')))));
+    end
+    got = sum(R.D(sub2ind(size(R.D), starts, arrayfun(@(sg) find(R.stations == sg), home))));
+    m0 = arrayfun(@(sg) m.targets(sg).docks, R.stations);
+    check(ok && all(lemma4) && max(n) - min(n) <= 1 && abs(got - best) < 1e-6 && all(isfinite(m0)) && ...
+        ag.battery.c2 == 1.16 && ag.maxNormalAccel == 0.5, sprintf(['%s: route tables = shortest paths ' ...
+        '(%d rounds, %d messages), homes %s (utilization %s, Lemma 4 holds), least route energy'], name, ...
+        R.rounds, R.messages, mat2str(home), mat2str(util, 2)));
+end
+d0 = dir(fullfile(root, 'Configurations', 'Energy', '*.mat'));
+makeEnergyLayouts();
+d1 = dir(fullfile(root, 'Configurations', 'Energy', '*.mat'));
+check(isequal([d0.datenum], [d1.datenum]), 'makeEnergyLayouts rewrites nothing when the layouts are unchanged');
 
 if isempty(failures)
     fprintf('\nenergyModelTest PASSED: %d checks\n', nChecks);

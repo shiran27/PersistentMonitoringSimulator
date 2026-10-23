@@ -6,10 +6,16 @@ classdef ChargingStation < Target
     % sends agents here before their batteries run out; other policies treat a station as an
     % ordinary node. It is drawn as a yellow square without an uncertainty bar, and it records
     % the energy it delivered and the time it was in use.
+    % docks (m_sigma, energy-aware paper Sec. 6.2) limits how many agents charge at once: an
+    % agent at rest takes a free dock first come, first served, and holds it until it leaves;
+    % others wait without charging. Inf (the default) lets every agent at rest charge.
     properties
         chargePower = 100      % charging power [W]
+        docks = Inf            % number of docks (agents charging at once)
         energyDelivered = 0    % energy delivered so far [J]
         busyTime = 0           % time with an agent charging so far [s]
+        dockTime = 0           % dock-seconds of charging so far (busyTime counts one per step)
+        docked = []            % indices of the agents holding a dock
     end
 
     methods
@@ -22,9 +28,20 @@ classdef ChargingStation < Target
         end
 
         function updateUncertainty(obj, dt, ~, ~)
-            % Recharge the agents at rest here (the model's per-step target update); R stays 0
+            % Recharge the agents at rest here (the model's per-step target update), up to docks
+            % of them; R stays 0
             ag = obj.residingAgents;
             if iscell(ag), ag = [ag{:}]; end
+            if isfinite(obj.docks) && ~isempty(ag)
+                ids = [ag.index];
+                obj.docked = obj.docked(ismember(obj.docked, ids));        % those still here
+                waiting = ids(~ismember(ids, obj.docked));
+                obj.docked = [obj.docked, waiting(1:min(end, obj.docks - numel(obj.docked)))];
+                ag = ag(ismember(ids, obj.docked));
+            elseif isempty(ag)
+                obj.docked = [];
+            end
+            obj.dockTime = obj.dockTime + numel(ag) * dt;
             for a = ag(:)'
                 before = a.battery.energyUsed;
                 a.battery.recharge(obj.chargePower, dt);
@@ -32,6 +49,13 @@ classdef ChargingStation < Target
             end
             if ~isempty(ag), obj.busyTime = obj.busyTime + dt; end
             obj.R = 0;
+        end
+
+        function ts = slotLength(obj, agent, socMin)
+            % Slot length t_s = (Q - E_min)/(P_c - P_I): a full charge from the reserve
+            % E_min = socMin Q under constant power, for agent's battery (Sec. 6.2)
+            b = agent.battery;
+            ts = (1 - socMin) * b.capacity / (obj.chargePower - b.idlePower());
         end
 
         function configure(obj, p)
@@ -48,6 +72,8 @@ classdef ChargingStation < Target
             reset@Target(obj);
             obj.energyDelivered = 0;
             obj.busyTime = 0;
+            obj.dockTime = 0;
+            obj.docked = [];
             obj.color = [1 0.82 0.1];
             obj.markerSize = 12;
             if ~isempty(obj.graphicHandle) && isvalid(obj.graphicHandle)

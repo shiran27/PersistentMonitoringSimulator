@@ -190,7 +190,10 @@ classdef guiTest < matlab.uitest.TestCase
             tc.press(tc.ui.ax, [20 50]);
             tc.type(tc.ui.stationPowerField, 250);
             tc.press(button(tc, 'Add Station'));
+            drawnow;   % let the mode switch land before the click (after a long test it can lag)
+            tc.assertEqual(tc.ui.controller.mode, "addStation", 'Add Station switches the mode');
             tc.press(tc.ui.ax, [70 50]);
+            drawnow;
             m = tc.ui.model;
             tc.verifyEqual(numel(m.targets), 2, 'station added by clicking');
             tc.verifyClass(m.targets(2), 'ChargingStation');

@@ -346,6 +346,14 @@ classdef SpeedProfile
                 P.v = y / (rho - tau); P.a = P.v / tau; P.s = tau;
                 return
             end
+            if rho <= SpeedProfile.minTransit(y, vb, ub) * (1 + 1e-9) && isfinite(ub)   % time-optimal
+                if isfinite(vb) && y >= vb^2 / ub
+                    P.a = ub; P.s = vb / ub; P.v = vb;                  % accelerate, cruise, brake
+                else
+                    P.kind = "sat"; P.a = ub; P.s = rho / 2;            % accelerate, brake
+                end
+                return
+            end
             th = nu * rho / 2;
             A = y * th / (rho * (2 * th * sinh(th / 2)^2 - SpeedProfile.sm(th)));   % th cosh th - sinh th
             if 2 * A * sinh(th / 2)^2 <= vb * tol && A * nu * sinh(th) <= ub * tol
@@ -365,7 +373,7 @@ classdef SpeedProfile
             if A * nu * sinh(th) > ub * tol && y <= ub * rho^2 / 4 * tol   % acceleration limit
                 zc = @(z) (2 * z .* sinh(z / 2).^2 - SpeedProfile.sm(z)) ./ sinh(z);   % z coth z - 1
                 dist = @(h) ub * (rho^2 / 4 - h.^2) + 2 * ub / nu^2 * zc(nu * h);
-                h = fzero(@(h) dist(max(h, 1e-12 * rho)) - y, [1e-12 * rho, rho / 2]);
+                h = SpeedProfile.safeRoot(@(h) dist(h) - y, 1e-12 * rho, rho / 2);
                 s = rho / 2 - h; C = ub / sinh(nu * h);
                 if ub * s + 2 * C / nu * sinh(nu * h / 2)^2 <= vb * tol
                     P.kind = "hypA"; P.a = ub; P.s = s; P.h = h; P.C = C;
@@ -377,11 +385,24 @@ classdef SpeedProfile
             t1 = @(x) s1(x) + x / nu;
             xmax = 700;
             if nu * vb / ub < 1, xmax = 2 * atanh(nu * vb / ub); end
-            if t1(xmax) > rho / 2, xmax = fzero(@(x) t1(x) - rho / 2, [0, xmax]); end
+            if t1(xmax) > rho / 2, xmax = SpeedProfile.safeRoot(@(x) t1(x) - rho / 2, 0, xmax); end
             dist = @(x) ub * s1(x)^2 + 2 * vb * x / nu - 2 * ub / (nu^2 * sinh(x)) * SpeedProfile.sm(x) ...
                 + vb * (rho - 2 * t1(x));
-            x = fzero(@(x) dist(x) - y, [1e-9 * min(xmax, 1), xmax]);
+            x = SpeedProfile.safeRoot(@(x) dist(x) - y, 1e-9 * min(xmax, 1), xmax);
             P.kind = "hypVA"; P.a = ub; P.s = s1(x); P.B = -ub / (nu * sinh(x)); P.x = x; P.t1 = t1(x); P.v = vb;
+        end
+
+        function x = safeRoot(f, a, b)
+            % The root of f in [a, b]; the endpoint nearer to it when round-off leaves no sign
+            % change (a profile at the edge of its regime)
+            fa = f(a); fb = f(b);
+            if fa * fb <= 0
+                x = fzero(f, [a, b]);
+            elseif abs(fa) <= abs(fb)
+                x = a;
+            else
+                x = b;
+            end
         end
 
         function x = rootUp(f, x0)

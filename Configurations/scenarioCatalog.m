@@ -28,6 +28,9 @@ rows = {
     "Collab: general, 4 agents", "Collab/Collab_General_N4.mat", "JS general layout with 4 agents spread over the targets (collaboration paper's team-size study)."
     "Collab: general, 5 agents", "Collab/Collab_General_N5.mat", "JS general layout with 5 agents spread over the targets (collaboration paper's team-size study)."
     "Collab: general, 6 agents", "Collab/Collab_General_N6.mat", "JS general layout with 6 agents spread over the targets (collaboration paper's team-size study)."
+    "Energy: office, 1 dock",   "Energy/Energy_Office_1Dock.mat",   "Office floor with a 120 W charging dock (1 dock) and 3 robots of the energy-aware paper: 1 m/s, DC-motor power model, 6 Wh batteries that stop when empty."
+    "Energy: office, 2 docks",  "Energy/Energy_Office_2Docks.mat",  "The office floor of the energy-aware paper with a 2-dock charging station (120 W) and 3 robots."
+    "Energy: campus, 2 stations", "Energy/Energy_Campus_2Stations.mat", "Campus with two 120 W charging stations of 2 docks each and 6 robots of the energy-aware paper."
     };
 T = table([rows{:, 1}]', fullfile(here, [rows{:, 2}]'), [rows{:, 3}]', ...
     'VariableNames', {'Name', 'File', 'Description'});

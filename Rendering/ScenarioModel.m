@@ -336,6 +336,9 @@ classdef ScenarioModel < handle
             an = arrayfun(@(a) a.maxNormalAccel, obj.agents);
             r0 = arrayfun(@(a) a.battery.R0, obj.agents);
             if any(c2 ~= 0), s.agentMotorC2 = c2; end                        % Battery c2 per agent
+            b0 = Battery();                                                   % c1, c3 if not the defaults
+            c1 = arrayfun(@(a) a.battery.c1, obj.agents); c3 = arrayfun(@(a) a.battery.c3, obj.agents);
+            if any(c1 ~= b0.c1) || any(c3 ~= b0.c3), s.agentMotorC1 = c1; s.agentMotorC3 = c3; end
             if any(isfinite(an)), s.agentMaxNormalAccel = an; end            % a_n per agent
             if any(r0 ~= 0)                                                   % battery losses
                 s.agentBatteryR0 = r0; s.agentBatteryVoc = arrayfun(@(a) a.battery.Voc, obj.agents);
@@ -343,6 +346,8 @@ classdef ScenarioModel < handle
             st = find(arrayfun(@(t) isa(t, 'ChargingStation'), obj.targets));
             s.chargers = st;                                                  % charging stations (targets)
             s.chargePower = arrayfun(@(k) obj.targets(k).chargePower, st);    % their power [W]
+            docks = arrayfun(@(k) obj.targets(k).docks, st);
+            if any(isfinite(docks)), s.chargerDocks = docks; end              % their docks (if limited)
             s.background = obj.background;                                    % background image file
             s.targetType = obj.targetType;                                    % target type (registry name)
             s.uncertaintyMode = obj.uncertaintyMode;
@@ -366,6 +371,8 @@ classdef ScenarioModel < handle
                     t = ChargingStation(k, s.targets(k,:));
                     p = layoutValue(s, 'chargePower', find(stations == k, 1));
                     if ~isempty(p), t.chargePower = p; end
+                    m = layoutValue(s, 'chargerDocks', find(stations == k, 1));
+                    if ~isempty(m), t.docks = m; end
                     obj.targets(end+1) = t;
                 else
                     t = obj.addTarget(s.targets(k,:));
@@ -393,7 +400,7 @@ classdef ScenarioModel < handle
                     if ~isempty(wh), spec.batteryWh = wh; end
                     stop = layoutValue(s, 'agentStopWhenEmpty', k);
                     if ~isempty(stop), spec.stopWhenEmpty = stop; end
-                    for f = ["MotorC2", "MaxNormalAccel", "BatteryR0", "BatteryVoc"]   % full power model
+                    for f = ["MotorC1", "MotorC2", "MotorC3", "MaxNormalAccel", "BatteryR0", "BatteryVoc"]   % full power model
                         val = layoutValue(s, char("agent" + f), k);
                         if ~isempty(val), spec.(lower(extractBefore(f, 2)) + extractAfter(f, 1)) = val; end
                     end
@@ -402,11 +409,12 @@ classdef ScenarioModel < handle
             end
         end
 
-        function t = addStation(obj, pos, chargePower)
+        function t = addStation(obj, pos, chargePower, docks)
             % A charging station (ChargingStation) at pos, numbered like a target; connect it
-            % with edges as any target. chargePower [W] defaults to the station's own default
+            % with edges as any target. chargePower [W] and docks default to the station's own
             t = ChargingStation(numel(obj.targets) + 1, pos);
             if nargin > 2, t.chargePower = chargePower; end
+            if nargin > 3, t.docks = docks; end
             obj.targets(end+1) = t;
         end
 
