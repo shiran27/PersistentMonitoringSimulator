@@ -199,6 +199,7 @@ makeEnergyLayouts();
 cat = scenarioCatalog();
 for name = cat.Name(startsWith(cat.Name, "Energy:"))'
     lay = load(cat.File(cat.Name == name), 's');
+    if isempty(lay.s.chargers), continue; end   % a setup without stations has no route tables
     m = ScenarioModel(DijkstraCornerPlanner()); m.importLayout(lay.s);
     ag = m.agents(1); R = RouteTable(m, ag);
     W = R.edgeEnergy; W(~isfinite(W)) = 0;

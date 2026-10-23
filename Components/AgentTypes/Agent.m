@@ -177,7 +177,11 @@ classdef (Abstract) Agent < handle & matlab.mixin.Heterogeneous
             if nargin < 4, name = obj.profile; end
             y = sum(vecnorm(diff(pts, 1, 1), 2, 2));
             vb = obj.segmentSpeedLimit(pts);
-            rho = max(rho, SpeedProfile.minTransit(y, vb, obj.state.maxAccel));
+            if SpeedProfile.canonical(name) == "FO-0"   % jumps to its speed: no acceleration phase
+                rho = max(rho, y / vb);
+            else
+                rho = max(rho, SpeedProfile.minTransit(y, vb, obj.state.maxAccel));
+            end
             P = SpeedProfile.shape(name, y, rho, vb, obj.state.maxAccel, obj.motionNu());
         end
 

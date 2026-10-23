@@ -50,6 +50,13 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
     %    may take a held slot, which cancels its group. Strategy "e" lets RHCP3 add the same cost
     %    mu_a dist(g_a, [t_f + T(j) + delta, latest start the plan's energy allows]) and then
     %    moves the booking to the free slot nearest g_a in that interval.
+    % 5. Charging methods (Sec. 6.11). Stations may swap batteries (ChargingStation.swapTime: a
+    %    session lasts the swap time). With a Battery1RC (CC-CV), a session ends when the charger
+    %    reports the battery full or at its slot's end; with tailSlot, the agent leaves when its
+    %    net charging rate falls to its cycle's mean net gain (the marginal value theorem, D9),
+    %    and at its slot's end it may stay for the next slot on its dock if that is free and still
+    %    worth it. A tail yields to an agent booked next on the dock that waits to start early
+    %    (rule (v)), so Lemma 4 keeps the plain t_s.
     % mu_a weights each target's d hhat_k/d delta_k by the agent's share of its recent visits
     % (priceShare). Stations charge only the agents in their slots (Agent.chargeAllowed is false
     % otherwise, also for an agent dwelling at a station).
@@ -70,6 +77,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         messageDelay = 0               % delta [s], added to the time row
         marginTime = 0                 % margins of physical agents (time row [s], energy row [J])
         marginEnergy = 0
+        transitMargins = [0 0]         % margins per transit [s, J] (physical agents' largest errors),
+                                       % times (1 + route hops), as the step's
         stepSize = 0                   % simulation step [s] (runTrial sets it): each transit may end up
                                        % to a step late and draw stepEnergy * stepSize more than its
                                        % plan, so (1 + route hops) times both join the margins
@@ -94,6 +103,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         pullMinCharge = 0.5            % least share of the capacity an offered session must refill
         otherStations = true           % the D2 request also asks the other stations for an earlier slot
                                        % (the home booking is released after the grant)
+        tailSlot = false               % CC-CV: leave by the marginal value theorem, and stay for the
+                                       % next slot on the dock if it is free and worth it (Sec. 6.11)
         earlyStart = true              % work-conserving docks: a booked agent at its station starts
                                        % charging as soon as its dock is idle and no other booking on
                                        % it comes first (its session still ends by its own slot's end)
@@ -151,6 +162,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         nextGroup = 0
         maxPlan = 0                    % longest plan length committed (the default lease)
         lastQueueCheck = -Inf
+        tails                          % agent index -> struct(station, dock, slot) of its tail slot
+        leftAt                         % agent index -> time it left the targets for its station
+        lastE                          % agent index -> [time, energy left] at its last step charging
     end
 
     methods
@@ -179,6 +193,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 case "waiting"
                     obj.startCharging(agent, model, i, simTime);
                 case "charging"
+                    if obj.extendTail(agent, i, simTime), return; end
                     obj.finishCharging(agent, model, i, simTime);
                     obj.forgetAgent(agent.index);
                     cmd = obj.depart(agent, model, adj, i, simTime);
@@ -213,6 +228,15 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             end
             if obj.modeOf(agent) == "waiting" && obj.earlyStart
                 obj.tryEarlyStart(agent, model, simTime);
+            end
+            if obj.modeOf(agent) == "charging"
+                bat = agent.battery;
+                if isa(bat, 'Battery1RC') && bat.full && agent.dwellRemaining > 0
+                    agent.dwellRemaining = 0;          % the charger reports it full
+                elseif obj.tailSlot && agent.dwellRemaining > 0 && ~obj.worthCharging(agent, simTime)
+                    agent.dwellRemaining = 0;          % the marginal value theorem: leave now
+                end
+                obj.lastE(agent.index) = [simTime, bat.remaining];
             end
             if obj.modeOf(agent) == "monitor"
                 onStep@EDRHCPolicy(obj, agent, model, simTime);
@@ -435,6 +459,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.queue = struct('time', {}, 'kind', {}, 'agent', {}, 'data', {});
             obj.nextGroup = 0; obj.maxPlan = 0; obj.lastQueueCheck = -Inf;
             obj.shares = []; obj.agentIdx = [];
+            obj.tails = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.leftAt = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.lastE = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.modeTime = zeros(0, 4);
             obj.homes = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.grids = containers.Map('KeyType', 'double', 'ValueType', 'any');
@@ -447,6 +474,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 'offers', 0, 'accepted', 0, ...                     % pull-forward offers sent and accepted
                 'commitMoves', 0, 'foreign', 0, ...                 % "b"/"e" moves after commits; grants elsewhere
                 'reports', 0, 'proposals', 0, 'commits', 0, 'cancels', 0, ...   % "R"'s protocol
+                'plans', 0, 'planMean', 0, 'muEMean', 0, ...         % committed plans: mean length, mean hhat_E price
+                'tails', 0, 'preempted', 0, ...                      % tail slots taken and yielded
                 'bookingChanges', 0, ...                            % bookings made, moved and released
                 'messages', 0, 'relays', 0);                        % end-to-end messages; their relay hops
             obj.rows = containers.Map('KeyType', 'double', 'ValueType', 'any');
@@ -484,8 +513,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 end
             end
             hops = max(obj.hopsTo(:));
-            obj.marginT = obj.marginTime + (1 + hops) * obj.stepSize;
-            obj.marginE = obj.marginEnergy + (1 + hops) * obj.stepEnergy * obj.stepSize;
+            obj.marginT = obj.marginTime + (1 + hops) * (obj.stepSize + obj.transitMargins(1));
+            obj.marginE = obj.marginEnergy + (1 + hops) * (obj.stepEnergy * obj.stepSize + obj.transitMargins(2));
             [home, ~, ~] = obj.routes.homeStations(model, starts, ref);
             for k = 1:numel(model.agents)
                 obj.homes(model.agents(k).index) = home(k);
@@ -635,9 +664,15 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             % best.j feasible (its start at most where the energy row for the plan's E^ex binds;
             % the time rows bound it from below), "e" to the free slot nearest the predicted need
             % among those the plan admits, and "R" reports the window to the station
-            if isempty(best.j) || ~any(obj.bookingStrategy == ["b", "e", "R"]), return; end
+            if isempty(best.j), return; end
             b = obj.activeBooking(agent);
-            if isempty(b), return; end
+            if ~isempty(b)   % running means over committed plans (S3's alpha_H = omega~/w_bar)
+                n = obj.stats.plans + 1;
+                obj.stats.planMean = obj.stats.planMean + (sum(best.x) + best.rho - obj.stats.planMean) / n;
+                obj.stats.muEMean = obj.stats.muEMean + (obj.hood.muE - obj.stats.muEMean) / n;
+                obj.stats.plans = n;
+            end
+            if isempty(b) || ~any(obj.bookingStrategy == ["b", "e", "R"]), return; end
             t = obj.hood.t; bat = agent.battery; col = obj.stationColumn(b.station);
             w = sum(best.x) + best.rho;
             obj.maxPlan = max(obj.maxPlan, w);
@@ -1059,7 +1094,21 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             G = obj.grids(b.station);
             kNow = max(floor(t / b.length + 1e-9), 0);
             cells = G(b.dock, kNow + 1:b.slot + 1);
-            if any(cells ~= 0 & cells ~= agent.index), return; end
+            blocking = cells ~= 0 & cells ~= agent.index;
+            if any(blocking)   % a tail slot in progress yields to the agent booked next (rule (v))
+                h = cells(1);
+                if blocking(1) && ~any(blocking(2:end)) && h > 0 && isKey(obj.tails, h)
+                    tl = obj.tails(h);
+                    if tl.station == b.station && tl.dock == b.dock
+                        holder = model.agents([model.agents.index] == h);
+                        if holder.dwellRemaining > 0
+                            holder.dwellRemaining = 0;
+                            obj.stats.preempted = obj.stats.preempted + 1;
+                        end
+                    end
+                end
+                return;
+            end
             for o = model.agents(:)'
                 if o.index ~= agent.index && obj.modeOf(o) == "charging" && isKey(obj.bookings, o.index)
                     ob = obj.bookings(o.index);
@@ -1200,7 +1249,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             % Toward the booked station (on leaving the targets, first an earlier free slot);
             % there, wait (not charging) until the slot, or charge
             cmd = struct();
-            if obj.modeOf(agent) == "monitor", obj.note(2, agent, i, t); end
+            if obj.modeOf(agent) == "monitor", obj.note(2, agent, i, t); obj.leftAt(agent.index) = t; end
             obj.modes(agent.index) = "toStation";
             if isKey(obj.offers, agent.index), remove(obj.offers, agent.index); end
             if isKey(obj.wantsEarlier, agent.index), remove(obj.wantsEarlier, agent.index); end
@@ -1236,6 +1285,46 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.noteDeparture(agent, model, i, t);
         end
 
+        function ok = extendTail(obj, agent, i, t)
+            % tailSlot, at the end of a slot: stay for the next slot on the dock if it is free, the
+            % battery is not full, and charging is still worth it (the marginal value theorem)
+            ok = false;
+            if ~obj.tailSlot || isKey(obj.tails, agent.index) || ~isKey(obj.bookings, agent.index), return; end
+            b = obj.bookings(agent.index); bat = agent.battery;
+            if t < b.start + b.length - 1e-6 || bat.energyUsed <= 1e-6, return; end   % ended early or full
+            if isa(bat, 'Battery1RC') && bat.full, return; end
+            if ~obj.worthCharging(agent, t), return; end
+            G = obj.grids(b.station); k = b.slot + 1;
+            if k + 1 > size(G, 2) || G(b.dock, k + 1) ~= 0, return; end
+            G(b.dock, k + 1) = agent.index;
+            obj.grids(b.station) = G;
+            obj.tails(agent.index) = struct('station', b.station, 'dock', b.dock, 'slot', k);
+            agent.dwellRemaining = (k + 1) * b.length - t;
+            n = find([obj.sessions.agent] == agent.index & isnan([obj.sessions.stop]), 1, 'last');
+            if ~isempty(n), obj.sessions(n).slotEnd = (k + 1) * b.length; end
+            obj.stats.tails = obj.stats.tails + 1;
+            obj.note(5, agent, i, t);
+            ok = true;
+        end
+
+        function ok = worthCharging(obj, agent, t)
+            % The marginal value theorem (D9): keep charging while the net charging rate exceeds
+            % the cycle's mean net gain, (E - E_in)/(t_trip + t_charging), with t_trip the round
+            % trip to the station (twice the way there)
+            ok = true;
+            if ~isKey(obj.lastE, agent.index), return; end
+            n = find([obj.sessions.agent] == agent.index & isnan([obj.sessions.stop]), 1, 'last');
+            if isempty(n), return; end
+            S = obj.sessions(n); last = obj.lastE(agent.index);
+            if t - last(1) <= 0, return; end
+            E = agent.battery.remaining;
+            rate = (E - last(2)) / (t - last(1));
+            trip = 0;
+            if isKey(obj.leftAt, agent.index) && ~isnan(S.arrive), trip = 2 * max(S.arrive - obj.leftAt(agent.index), 0); end
+            gain = (E - S.Ein) / max(trip + t - S.start, eps);
+            ok = rate > gain;
+        end
+
         function startCharging(obj, agent, model, i, t)
             % The session holds its dock from now through its slot, so no later booking lands
             % between (an early start ends by its own slot's end)
@@ -1250,6 +1339,12 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.charges = obj.charges + 1;
             st = model.targets(i);
             toFull = agent.battery.energyUsed / max(st.chargePower - agent.battery.idleDraw(), eps);
+            if st.swapTime > 0
+                toFull = st.swapTime;
+            elseif isa(agent.battery, 'Battery1RC')
+                toFull = Inf;          % CC-CV: until the charger reports it full (onStep)
+            end
+            obj.lastE(agent.index) = [t, agent.battery.remaining];
             agent.dwellRemaining = max(min(b.start + b.length - t, toFull), 1e-3);
             obj.sessions(end+1) = struct('agent', agent.index, 'station', i, 'dock', b.dock, ...
                 'slot', b.start, 'slotEnd', b.start + b.length, 'arrive', b.arrive, 'start', t, 'stop', NaN, ...
@@ -1263,6 +1358,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 obj.freeTime(i, obj.sessions(k).dock, t, obj.sessions(k).slotEnd);   % full before the slot's end
             end
             obj.unbook(agent);
+            if isKey(obj.tails, agent.index), remove(obj.tails, agent.index); end
             obj.modes(agent.index) = "monitor";
             agent.chargeAllowed = false;
             obj.lastCharge(agent.index) = [t, agent.battery.remaining];

@@ -112,6 +112,31 @@ end
 
 model.setActivePolicy(char(p.Policy));
 
+% Energy-aware paper options: BatteryModel "1RC" gives every agent a Battery1RC (one-RC circuit,
+% CC-CV charging, SOC estimate) with the same parameters; Battery_<property> sets a property of
+% every battery (e.g. 'Battery_chargeMethod', "constant power"); StationPower [W] and
+% StationSwapTime [s] set every station's charging power and swap time
+if isfield(p, 'BatteryModel') && string(p.BatteryModel) == "1RC"
+    for a = model.agents
+        if isa(a.battery, 'Battery1RC'), continue; end
+        old = a.battery; nb = Battery1RC(CapacityWh=old.capacityWh);
+        for q = ["P0", "alphaVel", "gammaAcc", "cpuMove", "cpuIdle", "commActive", "commStandby", "eta", "c2", "R0", "Voc"]
+            nb.(q) = old.(q);
+        end
+        nb.sensorSeed = a.index; nb.reset();
+        a.battery = nb;
+    end
+end
+for i = 1:numel(f)
+    if startsWith(f{i}, 'Battery_')
+        for a = model.agents, a.battery.(extractAfter(f{i}, 'Battery_')) = p.(f{i}); end
+    end
+end
+for tg = model.targets(arrayfun(@(t) isa(t, 'ChargingStation'), model.targets))
+    if isfield(p, 'StationPower'), tg.chargePower = p.StationPower; end
+    if isfield(p, 'StationSwapTime'), tg.swapTime = p.StationSwapTime; end
+end
+
 % Other Agent_<property> parameters set that property on every agent, its state or controller
 for i = 1:numel(f)
     if startsWith(f{i}, 'Agent_') && ~ismember(extractAfter(f{i}, 'Agent_'), AgentSpec.settings)
@@ -170,6 +195,7 @@ n = ceil(p.EndTime / p.Dt) + 1;
 tLog = zeros(n, 1); jLog = zeros(n, 1);
 logOn = isfield(p, 'Log') && p.Log;
 if logOn, L = emptyLog(n, numel(model.agents), nT); end
+visits = 0; wasHere = [];   % arrivals at monitored targets (out.log.visits, cumulative)
 peakR = 0; coLocationTime = 0; k = 0;
 while ~clock.isFinished()
     dt = clock.tick();
@@ -179,6 +205,11 @@ while ~clock.isFinished()
     if logOn
         L = logAgents(L, k, model.agents);
         L.R(k, :) = [model.targets.R];
+        here = arrayfun(@(a) isempty(a.path) && ~isempty(a.current_target_idx) && ...
+            ~isa(model.targets(a.current_target_idx), 'ChargingStation'), model.agents(:)');
+        if isempty(wasHere), wasHere = false(size(here)); end
+        visits = visits + sum(here & ~wasHere); wasHere = here;
+        L.visits(k) = visits;
     end
     peakR = max([peakR, model.targets.R]);
     if any(arrayfun(@(tg) numel(tg.residingAgents) > 1, model.targets))
@@ -209,7 +240,7 @@ if ~isempty(model.agents) && all(arrayfun(@(a) isprop(a, 'Je'), model.agents))
     if isprop(pol, 'energyWeight'), out.JT = pol.energyWeight * out.Je + finalJ; end
 end
 if logOn
-    for name = ["pos", "vel", "acc", "ori", "soc", "energy", "Je", "R"]
+    for name = ["pos", "vel", "acc", "ori", "soc", "energy", "Je", "R", "visits"]
         L.(name) = L.(name)(1:k, :, :);
     end
     L.t = tLog; L.J = jLog; L.dt = p.Dt; L.starts = starts;
@@ -222,7 +253,8 @@ function L = emptyLog(n, nA, nT)
 % Per-step states: agent pos/vel/acc are n x nA x 2, agent ori/soc/energy/Je n x nA (NaN if the
 % type has none), target uncertainties R n x nT
 L = struct('pos', zeros(n, nA, 2), 'vel', zeros(n, nA, 2), 'acc', zeros(n, nA, 2), ...
-    'ori', zeros(n, nA), 'soc', nan(n, nA), 'energy', nan(n, nA), 'Je', nan(n, nA), 'R', zeros(n, nT));
+    'ori', zeros(n, nA), 'soc', nan(n, nA), 'energy', nan(n, nA), 'Je', nan(n, nA), 'R', zeros(n, nT), ...
+    'visits', zeros(n, 1));
 end
 
 function L = logAgents(L, k, agents)

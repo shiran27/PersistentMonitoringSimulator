@@ -114,6 +114,11 @@ classdef Battery < handle
             obj.energyUsed = 0;
         end
 
+        function swap(obj)
+            % A battery swap: a full battery
+            obj.energyUsed = 0;
+        end
+
         function s = get.soc(obj)
             s = 1 - obj.energyUsed / (obj.capacityWh * 3600);
         end

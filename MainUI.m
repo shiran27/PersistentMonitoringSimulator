@@ -133,6 +133,11 @@ classdef MainUI < handle
                 obj.onAgentAccelChanged(a.state.maxAccel);
                 obj.onAgentProfileChanged(a.profile);
             end
+            st = obj.model.targets(arrayfun(@(t) isa(t, 'ChargingStation'), obj.model.targets));
+            if ~isempty(st)   % show the stations' power (editing it sets every station's)
+                obj.stationPowerField.Value = st(1).chargePower;
+                obj.controller.stationPower = st(1).chargePower;
+            end
             % The layout's background map, if it names one
             bg = ScenarioModel.backgroundFile(obj.model.background);
             if bg ~= "", obj.renderer.loadBackgroundImage(bg); else, obj.renderer.clearBackground(); end
@@ -298,7 +303,7 @@ classdef MainUI < handle
             place(uibutton(p,'Text','Add Station', ...
                 'ButtonPushedFcn', @(~,~)obj.setMode("addStation")), 9, 1);
             obj.stationPowerField = place(uieditfield(p,'numeric','Value',100,'Limits',[0 Inf], ...
-                'ValueDisplayFormat', '%g W', 'Tooltip', 'Charging power of the stations added next', ...
+                'ValueDisplayFormat', '%g W', 'Tooltip', 'Charging power of the stations added next and of every station in the layout', ...
                 'ValueChangedFcn', @(s,~)obj.onStationPowerChanged(s.Value)), 9, 2);
 
             % Settings of agents added next (agent type above, speed, acceleration, profile)
@@ -511,7 +516,14 @@ classdef MainUI < handle
         end
 
         function onStationPowerChanged(obj, value)
+            % The power of the stations added next and of every station already placed (so a
+            % point of the energy paper's station sweep can be set up here)
             obj.controller.stationPower = value;
+            st = obj.model.targets(arrayfun(@(t) isa(t, 'ChargingStation'), obj.model.targets));
+            for t = st(:)', t.chargePower = value; end
+            if ~isempty(st)
+                obj.setStatus(sprintf('Station power: %g W (also the %d station(s) in the layout)', value, numel(st)));
+            end
         end
 
         function onAgentAccelChanged(obj, value)
