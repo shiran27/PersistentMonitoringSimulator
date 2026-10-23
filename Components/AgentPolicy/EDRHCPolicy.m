@@ -188,6 +188,7 @@ classdef EDRHCPolicy < Policy
                     'y', y, 'vb', obj.speedLimit, 'ub', obj.accelLimit);
                 rhoRange = obj.transitRange(agent, model, i, hood(k), pts, rhoRange);
                 if isempty(rhoRange), continue; end   % no affordable transit to this neighbor
+                if rhoRange(2) <= rhoRange(1), d.rho = rhoRange(1); end   % one transit time left
                 if obj.transit ~= "FO-0"   % the energy the agent draws, E(rho)
                     d.E = obj.energyOf(agent, model, i, hood(k), pts, y, rhoRange);
                 end
@@ -489,6 +490,11 @@ classdef EDRHCPolicy < Policy
             if isempty(Z), Z = lb; end
             costs = cost3(Z);
             [~, k] = min(costs);
+            if ~isfinite(costs(k))   % no plan of this case has a defined cost: infeasible
+                cost = Inf; x = Z(k, :) * M' + c0;
+                if fixed, rho = rhoRange(1); else, rho = Z(k, 3); end
+                return;
+            end
             [z, fz] = fmincon(@(z) cost3(z(:)'), Z(k, :)', Ain, bin, [], [], lb', ub', [], obj.options);
             if fz <= costs(k) && all(z(:)' >= lb - obj.tol) && all(Ain * z <= bin + obj.tol)
                 cost = fz; z = max(z(:)', lb);
