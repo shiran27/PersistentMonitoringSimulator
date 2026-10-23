@@ -25,18 +25,22 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
     % 3. Charging (Secs. 6.2, 6.8). An agent leaves for its station when no uncovered neighbor
     %    is affordable or at its latest departure, follows the least-energy route without
     %    covering targets, waits there until t_a (not charging; with earlyStart it starts as soon
-    %    as its dock is idle and no other booking on it comes first), charges until full or the end
-    %    of its slot, and books its next slot. Once its energy covers its mean power until T it releases
-    %    its booking. Slots of length t_s = (Q - E_min)/(P_c - P_I) start at k t_s on every dock;
-    %    bookingStrategy "a" (default) takes the latest free slot before the agent's predicted
+    %    as its dock is idle and no other booking on it comes first, and holds the dock through
+    %    its slot), charges until full or the end of its slot, and books its next slot. With
+    %    pullForward, a station offers time freed on a dock (a session that ended full before its
+    %    slot's end) to the first booked agent in line (one that asked for an earlier slot, then
+    %    the earliest booking) that is at most half full, can reach the dock in that time and use
+    %    it until its slot; it accepts at its next event, claims the dock and comes now. Once its
+    %    energy covers its mean power until T it releases its booking. Slots of length
+    %    t_s = (Q - E_min)/(P_c - P_I) start at k t_s on every dock; bookingStrategy "a" (default) takes the latest free slot before the agent's predicted
     %    need (its energy at its mean power since its last charge), "b" the latest free slot in
     %    its window [e_a, l_a] (which leaves it no energy beyond idling). An agent that heads to
     %    its station early moves its booking to the earliest free slot it can reach, which only
     %    raises its energy on arrival. Home stations balance the stations' utilization
     %    (RouteTable.homeStations).
-    % The station scheduler of the paper (reported costs, reassignments, offers) is not part of
-    % this class yet. Stations charge only the agents in their slots (Agent.chargeAllowed is
-    % false otherwise, also for an agent dwelling at a station).
+    % The rest of the paper's station scheduler (reported costs, reassignments, offers to other
+    % stations) is not part of this class yet. Stations charge only the agents in their slots
+    % (Agent.chargeAllowed is false otherwise, also for an agent dwelling at a station).
     % Parameters are properties ('Policy_<name>' in runTrial); runTrial sets missionEnd.
     properties
         objectiveForm = "dinkelbach"   % "dinkelbach", "ratio" or "alphaH"
@@ -61,6 +65,13 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                                        % mu_a/(P_c - P_I) ("charging")
         priceAveraging = false         % true: mu_a is the running mean of the agent's values at its
                                        % events, instead of the value at this event
+        pullForward = true             % station pull-forward: time freed on a dock (a session ended before
+                                       % its slot's end, or a released booking of the current slot) is
+                                       % offered to the first booked agent in line (those that asked for
+                                       % an earlier slot first, then by booking start) whose battery is at
+                                       % most 1 - pullMinCharge full; it accepts at its next event if it
+                                       % can still reach the dock in the freed time
+        pullMinCharge = 0.5            % least share of the capacity an offered session must refill
         earlyStart = true              % work-conserving docks: a booked agent at its station starts
                                        % charging as soon as its dock is idle and no other booking on
                                        % it comes first (its session still ends by its own slot's end)
@@ -100,6 +111,11 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         marginT = 0, marginE = 0       % margins in use: the given ones plus the step's
         rows                           % neighbor j -> its row limits in the solve in progress
         muMean                         % agent index -> [running mean of mu_a, number of events]
+        offers                         % agent index -> struct(station, dock, until): freed time offered to it
+        wantsEarlier                   % agent index -> true while it asked for an earlier slot
+        freed                          % 1000 station + dock -> end of the time freed on that dock
+        lastOfferCheck = -Inf          % time of the stations' last check for freed time
+        slotLens                       % station index -> slot length t_s
     end
 
     methods
@@ -133,7 +149,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                     cmd = obj.depart(agent, model, adj, i, simTime);
                 otherwise
                     obj.maybeRelease(agent, simTime);
-                    if obj.mustLeave(agent, i, simTime)
+                    if obj.acceptOffer(agent, model, i, simTime)
+                        cmd = obj.goStation(agent, model, i, simTime);
+                    elseif obj.mustLeave(agent, i, simTime)
                         cmd = obj.goStation(agent, model, i, simTime);
                     else
                         cmd = plan@EDRHCPolicy(obj, agent, model, adj, i, simTime);
@@ -149,6 +167,10 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 obj.modeTime(agent.index, k) = obj.modeTime(agent.index, k) + simTime - obj.lastStep(agent.index);
             end
             obj.lastStep(agent.index) = simTime;
+            if obj.pullForward && simTime > obj.lastOfferCheck && obj.freed.Count > 0
+                obj.lastOfferCheck = simTime;
+                obj.offerFreedTime(model, simTime);
+            end
             if obj.modeOf(agent) == "waiting" && obj.earlyStart
                 obj.tryEarlyStart(agent, model, simTime);
             end
@@ -295,6 +317,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                     cmd = obj.goStation(agent, model, i, simTime);
                 else
                     cmd = struct();
+                    obj.wantsEarlier(agent.index) = true;   % first in line for freed time
                     obj.note(3, agent, i, simTime);
                     obj.dwell(agent, model, adj, i, "inactive", latest - simTime, true);
                 end
@@ -337,6 +360,11 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.lastCharge = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.lastStep = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.muMean = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.offers = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.wantsEarlier = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.freed = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.lastOfferCheck = -Inf;
+            obj.slotLens = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.modeTime = zeros(0, 4);
             obj.homes = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.grids = containers.Map('KeyType', 'double', 'ValueType', 'any');
@@ -345,7 +373,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.marginT = obj.marginTime; obj.marginE = obj.marginEnergy;
             obj.charges = 0; obj.windowMisses = 0;
             obj.stats = struct('rhcp', 0, 'energyBinds', 0, 'timeBinds', 0, 'noAffordable', 0, ...
-                'transits', zeros(0, 2), 'none', zeros(1, 5));   % none: covered, energy, time, cost, kind 1-2
+                'transits', zeros(0, 2), 'none', zeros(1, 5), ...  % none: covered, energy, time, cost, kind 1-2
+                'offers', 0, 'accepted', 0);                        % pull-forward offers sent and accepted
             obj.rows = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.sessions = obj.sessions([]);
             obj.initialized = false;
@@ -388,6 +417,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 K = 4;
                 if isfinite(obj.missionEnd), K = ceil(obj.missionEnd / st.slotLength(ref, obj.socMin)) + 2; end
                 obj.grids(s) = zeros(m, K);
+                obj.slotLens(s) = st.slotLength(ref, obj.socMin);
             end
             for k = 1:numel(model.agents)
                 a = model.agents(k);
@@ -468,10 +498,11 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         end
 
         function unbook(obj, agent)
+            % Frees the agent's slot, and the earlier ones an early session held (startCharging)
             if ~isKey(obj.bookings, agent.index), return; end
             b = obj.bookings(agent.index);
             G = obj.grids(b.station);
-            if G(b.dock, b.slot + 1) == agent.index, G(b.dock, b.slot + 1) = 0; end
+            G(G == agent.index) = 0;
             obj.grids(b.station) = G;
             remove(obj.bookings, agent.index);
         end
@@ -584,6 +615,87 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             dh = sum(hf, 2, 'omitnan') - h.h0;
         end
 
+        function offerFreedTime(obj, model, t)
+            % Station pull-forward: time freed on a dock goes to the first booked agent in line that
+            % can use it (one that asked for an earlier slot first, then the earliest booking): at
+            % most 1 - pullMinCharge full, monitoring, able to reach the dock before the freed time
+            % ends, and with the dock free from now through its own slot. One offer per dock at a
+            % time; the freed time lapses at its end or once an agent takes it
+            for key = cell2mat(keys(obj.freed))
+                until = obj.freed(key);
+                s = floor(key / 1000); d = key - 1000 * s;
+                if t >= until, remove(obj.freed, key); continue; end
+                if obj.dockBusy(s, d, t), continue; end
+                if any(cellfun(@(f) f.station == s && f.dock == d, values(obj.offers))), continue; end
+                G = obj.grids(s);
+                col = obj.stationColumn(s);
+                cands = []; order = [];
+                for a = model.agents(:)'
+                    b = obj.activeBooking(a);
+                    if isempty(b) || b.station ~= s || obj.modeOf(a) ~= "monitor", continue; end
+                    if isKey(obj.offers, a.index), continue; end
+                    if a.battery.soc > 1 - obj.pullMinCharge, continue; end   % not worth a session yet
+                    arrive = t + obj.routes.T(a.current_target_idx, col) + obj.messageDelay + obj.marginT;
+                    if arrive >= min(until, b.start), continue; end
+                    if ~obj.dockFreeUntil(G, d, t, b, a.index), continue; end
+                    cands(end+1) = a.index; %#ok<AGROW>
+                    order(end+1) = b.start - 1e6 * isKey(obj.wantsEarlier, a.index); %#ok<AGROW>
+                end
+                if isempty(cands), continue; end
+                [~, o] = min(order);
+                obj.offers(cands(o)) = struct('station', s, 'dock', d, 'until', until);
+                obj.stats.offers = obj.stats.offers + 1;
+            end
+        end
+
+        function freeTime(obj, s, d, t, until)
+            % A dock's time from t to until is freed: offer it (pullForward)
+            if obj.pullForward && until > t + 1e-6
+                obj.freed(1000 * s + d) = until;
+            end
+        end
+
+        function busy = dockBusy(obj, s, d, t)
+            % Is dock d of station s taken now: its current slot booked, held by a session or
+            % claimed by an agent on its way (startCharging, acceptOffer)?
+            G = obj.grids(s);
+            k = max(floor(t / obj.slotLens(s) + 1e-9), 0) + 1;
+            busy = k <= size(G, 2) && G(d, k) ~= 0;
+        end
+
+        function ok = dockFreeUntil(obj, G, d, t, b, self)
+            % Could the agent with booking b use dock d from now until its own slot: no other
+            % booking on d from now through b's slot (b's own slot on d free or its own)?
+            k = max(floor(t / b.length + 1e-9), 0) + 1;
+            if b.slot + 1 > size(G, 2), ok = false; return; end
+            cells = G(d, k:b.slot + 1);
+            ok = all(cells == 0 | cells == self);
+        end
+
+        function ok = acceptOffer(obj, agent, ~, i, t)
+            % At an event: take offered freed time if the agent can still reach the dock in it and
+            % the dock is still free until its booking; the booking moves to that dock (same slot)
+            % and claims it from now on, so no later booking lands between
+            ok = false;
+            if ~obj.pullForward || ~isKey(obj.offers, agent.index), return; end
+            f = obj.offers(agent.index); remove(obj.offers, agent.index);
+            b = obj.activeBooking(agent);
+            if isempty(b) || b.station ~= f.station, return; end
+            col = obj.stationColumn(b.station);
+            if t + obj.routes.T(i, col) + obj.messageDelay + obj.marginT >= min(f.until, b.start), return; end
+            G = obj.grids(b.station);
+            if ~obj.dockFreeUntil(G, f.dock, t, b, agent.index), return; end
+            G(G == agent.index) = 0;
+            kNow = max(floor(t / b.length + 1e-9), 0);
+            G(f.dock, kNow + 1:b.slot + 1) = agent.index;
+            obj.grids(b.station) = G;
+            b.dock = f.dock; obj.bookings(agent.index) = b;
+            key = 1000 * b.station + f.dock;
+            if isKey(obj.freed, key), remove(obj.freed, key); end
+            obj.stats.accepted = obj.stats.accepted + 1;
+            ok = true;
+        end
+
         function tryEarlyStart(obj, agent, model, t)
             % Work-conserving docks: start the booked session now if nobody charges on the
             % agent's dock and no other booking on it lies between now and the agent's slot (the
@@ -684,6 +796,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             bat = agent.battery;
             if bat.remaining - obj.socMin * bat.capacity - obj.marginE >= ...
                     max(obj.meanPower(agent, t), bat.idleDraw()) * (obj.missionEnd - t)
+                if bk.start <= t, obj.freeTime(bk.station, bk.dock, t, bk.start + bk.length); end
                 obj.unbook(agent);
                 obj.released(agent.index) = true;
                 obj.note(7, agent, NaN, t);
@@ -727,6 +840,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             cmd = struct();
             if obj.modeOf(agent) == "monitor", obj.note(2, agent, i, t); end
             obj.modes(agent.index) = "toStation";
+            if isKey(obj.offers, agent.index), remove(obj.offers, agent.index); end
+            if isKey(obj.wantsEarlier, agent.index), remove(obj.wantsEarlier, agent.index); end
             obj.forgetAgent(agent.index);
             b = obj.bookings(agent.index);
             if i ~= b.station
@@ -759,7 +874,13 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         end
 
         function startCharging(obj, agent, model, i, t)
+            % The session holds its dock from now through its slot, so no later booking lands
+            % between (an early start ends by its own slot's end)
             b = obj.bookings(agent.index);
+            G = obj.grids(b.station);
+            kNow = min(max(floor(t / b.length + 1e-9), 0), b.slot);
+            G(b.dock, kNow + 1:b.slot + 1) = agent.index;
+            obj.grids(b.station) = G;
             obj.note(5, agent, i, t);
             obj.modes(agent.index) = "charging";
             agent.chargeAllowed = true;
@@ -776,6 +897,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             k = find([obj.sessions.agent] == agent.index & isnan([obj.sessions.stop]), 1, 'last');
             if ~isempty(k)
                 obj.sessions(k).stop = t; obj.sessions(k).Eout = agent.battery.remaining;
+                obj.freeTime(i, obj.sessions(k).dock, t, obj.sessions(k).slotEnd);   % full before the slot's end
             end
             obj.unbook(agent);
             obj.modes(agent.index) = "monitor";
