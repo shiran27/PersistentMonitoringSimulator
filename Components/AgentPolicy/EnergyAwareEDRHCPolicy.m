@@ -61,7 +61,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
     %    (rule (v)), so Lemma 4 keeps the plain t_s.
     % 6. Docks and stations (after the office diagnosis). Fill-in charging (fillIn): an agent
     %    waiting at its station charges on any idle dock until the next slot booked on that dock
-    %    (or until full), then books again nearest its new predicted need. Station exit: an agent
+    %    (or until full), then books again nearest its new predicted need; with d2FillIn, an agent
+    %    that would wait for its slot at a drained target (D2) goes now when a dock will be idle on
+    %    its arrival for at least t_s/4 (the Office 2 docks diagnosis). Station exit: an agent
     %    at a station whose neighbors are all covered heads for the nearest uncovered target,
     %    passing through covered ones, instead of waiting there; each hop keeps both booking rows
     %    (exitCheck), else the agent stays as with no affordable neighbor.
@@ -130,7 +132,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         fillIn = true                  % an agent waiting at its station charges on any idle dock until
                                        % the next slot booked there, then books again
         minFill = 10                   % shortest fill-in worth starting [s]
-        d2FillIn = false               % D2, when no earlier slot is free: go now if the station's dock will
+        d2FillIn = true                % D2, when no earlier slot is free: go now if the station's dock will
                                        % be idle on arrival for at least t_s/4 before the next booked start
         stationExit = true             % from a station with every neighbor covered, head for the nearest
                                        % uncovered target through covered ones
