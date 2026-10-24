@@ -90,6 +90,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         stepEnergy = 5                 % per transit and second of step [J/s]: twice the 2.3 J/s
                                        % measured on the energy setups
         priceScale = 1                 % multiplies hhat_E's price mu_a (0: energy unpriced by hhat_E)
+        energyTerm = "arrival"         % what hhat_E prices: "arrival", the energy left on arriving at the
+                                       % station (E^ex + D_j - D_i); "plan", the energy left at the plan's
+                                       % end (E^ex only: the route's transits are priced when planned)
         priceForm = "renewal"          % hhat_E's slope mu_a/(P_c - P_I + Pbar_a) ("renewal", default:
                                        % the slope of the renewal model's value of stored energy;
                                        % Pbar_a the agent's mean power since its last charge) or
@@ -408,7 +411,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 case "alphaH"
                     J = (Jint + dh) ./ w + obj.alphaH * Eex;
                 otherwise
-                    N = Jint + obj.omega * Eex + dh + obj.hood.muE * (Eex + obj.ctx.D - obj.hood.Di);   % hhat_E
+                    route = obj.ctx.D - obj.hood.Di;
+                    if obj.energyTerm == "plan", route = 0; end
+                    N = Jint + obj.omega * Eex + dh + obj.hood.muE * (Eex + route);   % hhat_E
                     if isfield(obj.ctx, 'slot')   % "e": the distance of the need from the plan's slot starts
                         sl = obj.ctx.slot;
                         N = N + sl.mu * (max(0, sl.lo + w - sl.need) + max(0, sl.need - sl.hi + Eex / sl.P));

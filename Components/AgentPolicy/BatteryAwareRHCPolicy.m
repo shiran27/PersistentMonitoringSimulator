@@ -31,6 +31,9 @@ classdef BatteryAwareRHCPolicy < EDRHCPolicy
     properties
         socMin = 0.05     % charge always kept in reserve, as a fraction of the capacity
         queueWait = 1     % wait [s] before trying again while the station is taken
+        dockAware = false % true: a station with m docks is taken only when m other agents charge at
+                          % or head to it, and the reserve counts ceil((n - 1)/m) full charges (the
+                          % energy-aware paper's stations); false: one agent at a time per station
         charges = 0       % charging sessions started so far (all agents)
     end
 
@@ -182,14 +185,20 @@ classdef BatteryAwareRHCPolicy < EDRHCPolicy
 
         function W = queueTime(obj, agent, model, st)
             % Longest wait at station st: every other agent that uses it (its nearest station)
-            % charging fully once
+            % charging fully once (dockAware: ceil(that number / m) full charges)
             W = 0;
             P = model.targets(st).chargePower;
+            c = zeros(1, 0);
             for o = model.agents(:)'
                 if o == agent || o.batteryEmpty(), continue; end
                 ro = obj.route(o, model);
                 if ro.station(o.current_target_idx) ~= st, continue; end
-                W = W + o.battery.capacity / (P - o.battery.idlePower());
+                c(end+1) = o.battery.capacity / (P - o.battery.idlePower()); %#ok<AGROW>
+                W = W + c(end);
+            end
+            m = model.targets(st).docks;
+            if obj.dockAware && isfinite(m) && ~isempty(c)
+                W = ceil(numel(c) / m) * max(c);
             end
         end
 
@@ -212,17 +221,21 @@ classdef BatteryAwareRHCPolicy < EDRHCPolicy
             cmd.targetIdx = k;
         end
 
-        function tf = taken(~, agent, model, k)
-            % Is another agent charging at station k or heading to it? (An agent whose battery
-            % ran out on the way does not count; one that stopped at the station does.)
+        function tf = taken(obj, agent, model, k)
+            % Is another agent charging at station k or heading to it (dockAware: are all its docks
+            % occupied or claimed)? An agent whose battery ran out on the way does not count; one
+            % that stopped at the station does
             st = model.targets(k);
-            tf = false;
+            m = 1;
+            if obj.dockAware, m = st.docks; end
+            n = 0;
             for o = model.agents(:)'
                 if o == agent || o.current_target_idx ~= k, continue; end
                 if ~o.batteryEmpty() || norm(o.state.pos - st.position) < model.detectionRadius
-                    tf = true; return;
+                    n = n + 1;
                 end
             end
+            tf = n >= m;
         end
 
         function E = edgeEnergy(obj, agent, model, i, j, rho)

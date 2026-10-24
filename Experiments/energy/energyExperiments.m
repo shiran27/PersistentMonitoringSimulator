@@ -184,6 +184,18 @@ for s = seeds5
         end
     end
 end
+% Appended after the first full run (2026-10-24), so the ids above stay: S3's hhat_E priced at the
+% plan's end ("plan"), 10 seeds, and alphaH x1 on seeds 6-10, so both stand next to S2's 10 seeds
+if ~opts.Quick
+    for sc = setups, for s = seeds
+        p = method("EA-SO", base(sc, T, s), st); p.Policy_energyTerm = "plan";
+        add("S3", sc, "dinkelbach", s, "plan", p);
+    end, end
+    for sc = setups, for s = 6:10
+        p = method("EA-SO", base(sc, T, s), st); p.Policy_objectiveForm = "alphaH";
+        add("S3", sc, "alphaH", s, "x1", p, "S2|" + sc + "|EA-SO|1");
+    end, end
+end
 L = cell2table(rows, 'VariableNames', {'Study', 'Scenario', 'Method', 'Seed', 'Variant', 'Params', 'Needs'});
 end
 
@@ -206,6 +218,7 @@ switch m
     case "EA-FO-0", p.Policy = "Energy-Aware ED-RHC"; p.Policy_bookingStrategy = strategy;
                     p.Policy_transit = "FO-0"; p.Agent_profile = "FO-0";
     case "BA",      p.Policy = "Battery-Aware ED-RHC"; p.Agent_profile = "FO-0"; p.Policy_socMin = 0.1;
+                    p.Policy_dockAware = true;   % uses every dock of a station
     case "ED-RHC",  p.Policy = "ED-RHC"; p.Policy_alpha = 0.5; p.Agent_profile = "FO-0"; p.Agent_stopWhenEmpty = false;
     case "ED-RHC-alpha", p.Policy = "ED-RHC"; p.Policy_alpha = "nominal"; p.Agent_profile = "FO-0"; p.Agent_stopWhenEmpty = false;
     case "ED-ORHC-SO", p.Policy = "ED-ORHC-SO"; p.Agent_profile = "SO"; p.Agent_stopWhenEmpty = false;

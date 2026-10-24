@@ -205,7 +205,9 @@ classdef DiffDriveAgent < Agent
             fast = obj.fastestProfile(G, 1);
             if P.rho < fast.rho, P = fast; end   % a plan it cannot keep: the fastest it can
             name = obj.transitProfile; if name == "", name = obj.profile; end
-            planE = obj.transitPlanEnergy(G.pts, P.rho, name);
+            rhoPlan = tTurn + P.rho;
+            if plan > 0, rhoPlan = max(plan, rhoPlan); end
+            planE = obj.transitPlanEnergy(G.pts, rhoPlan, name);   % what the policy predicted, turn included
             obj.leg = struct('G', G, 'P', P, 'rho', tTurn + P.rho, 'tau', 0, 'tau0', tTurn, 's0', 0, ...
                 'turn', [tTurn, dpsi, obj.state.ori], ...
                 'pRef', G.pts(1, :), 'thRef', th0, 'vRef', 0, 'wRef', 0, ...
