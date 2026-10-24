@@ -90,9 +90,14 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         stepEnergy = 5                 % per transit and second of step [J/s]: twice the 2.3 J/s
                                        % measured on the energy setups
         priceScale = 1                 % multiplies hhat_E's price mu_a (0: energy unpriced by hhat_E)
-        energyTerm = "arrival"         % what hhat_E prices: "arrival", the energy left on arriving at the
-                                       % station (E^ex + D_j - D_i); "plan", the energy left at the plan's
-                                       % end (E^ex only: the route's transits are priced when planned)
+        energyTerm = "plan"            % what hhat_E prices: "plan" (default), the energy left at the plan's
+                                       % end (E^ex only: the route's transits are priced when planned);
+                                       % "arrival", the energy left on arriving at the station
+                                       % (E^ex + D_j - D_i; the default until 2026-10-24, which double
+                                       % counts the route's energy)
+        needSoc = NaN                  % booking target: the predicted need is when the energy falls to
+                                       % needSoc Q (NaN: socMin Q, the reserve); a higher target books
+                                       % earlier slots, so agents arrive with more energy
         priceForm = "renewal"          % hhat_E's slope mu_a/(P_c - P_I + Pbar_a) ("renewal", default:
                                        % the slope of the renewal model's value of stored energy;
                                        % Pbar_a the agent's mean power since its last charge) or
@@ -352,7 +357,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 [~, tE] = obj.rowStarts(agent, bk);
                 obj.ctx.slot = struct('lo', t + obj.routes.T(j, col) + obj.messageDelay + obj.marginT, ...
                     'hi', tE + budget / bat.idleDraw(), 'P', bat.idleDraw(), 'mu', obj.lastMuOf(agent), ...
-                    'need', t + (bat.remaining - obj.socMin * bat.capacity - D) / obj.meanPower(agent, t));
+                    'need', t + (bat.remaining - obj.needLevel(bat) - D) / obj.meanPower(agent, t));
             end
             if obj.transit == "FO-0"   % fixed transit time
                 if tab.E(rr(1)) > budget, rr = []; end
@@ -611,7 +616,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             if kHi + 1 > size(G, 2), G(:, end+1:kHi + 1) = 0; end
             ks = kHi:-1:kLo;                    % "b": the latest first
             if obj.bookingStrategy ~= "b"       % "a", "R", "e": nearest the need at the mean power since the last charge
-                need = t + (bat.remaining - obj.socMin * bat.capacity - obj.routes.D(i, col)) / obj.meanPower(agent, t);
+                need = t + (bat.remaining - obj.needLevel(bat) - obj.routes.D(i, col)) / obj.meanPower(agent, t);
                 [~, order] = sort(abs(ks * ts - need));
                 ks = ks(order);
             end
@@ -739,7 +744,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             latest = tE + (obj.energyBudget(agent, best.j) - tab.E(best.rho)) / bat.idleDraw();
             earliest = max(t + w + obj.routes.T(best.j, col), t + best.x(1) + best.x(2) + obj.routes.T(i, col)) + ...
                 obj.messageDelay + obj.marginT;
-            need = t + (bat.remaining - obj.socMin * bat.capacity - obj.routes.D(best.j, col)) / obj.meanPower(agent, t);
+            need = t + (bat.remaining - obj.needLevel(bat) - obj.routes.D(best.j, col)) / obj.meanPower(agent, t);
             if obj.bookingStrategy == "R"
                 if obj.reportDeadband > 0 && isKey(obj.lastReport, agent.index) && ...
                         abs(need - obj.lastReport(agent.index)) <= obj.reportDeadband * b.length && ...
@@ -776,6 +781,12 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                     return;
                 end
             end
+        end
+
+        function E = needLevel(obj, bat)
+            % The energy at which the predicted need falls: needSoc Q, or the reserve socMin Q
+            th = obj.needSoc; if isnan(th), th = obj.socMin; end
+            E = th * bat.capacity;
         end
 
         function mu = lastMuOf(obj, agent)
@@ -1566,7 +1577,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 mu = obj.lastMuOf(agent);
                 obj.send("report", agent.index, struct('e', t + obj.routes.T(i, col) + obj.messageDelay + obj.marginT, ...
                     'l', t + (bat.remaining - obj.socMin * bat.capacity - obj.marginE - obj.routes.D(i, col)) / bat.idleDraw(), ...
-                    'need', t + (bat.remaining - obj.socMin * bat.capacity - obj.routes.D(i, col)) / obj.meanPower(agent, t), ...
+                    'need', t + (bat.remaining - obj.needLevel(bat) - obj.routes.D(i, col)) / obj.meanPower(agent, t), ...
                     'mu', mu), t, i, b.station);
                 obj.stats.reports = obj.stats.reports + 1;
             end
