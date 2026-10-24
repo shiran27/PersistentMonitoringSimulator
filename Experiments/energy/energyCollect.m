@@ -248,7 +248,10 @@ end
 function mac = stationsFigure(L, runDir, resDir)
 % S6: the monitoring share against P_c / (ceil(n/m) P_I), with Proposition 4's bound f* and the
 % mean-value-analysis estimate, Lemma 4's bound marked; and the check that no agent ran out
-% where the condition holds
+% where Theorem 1's assumptions hold: Lemma 4's condition and initial windows that each hold a
+% free slot (As. 3; a run with a window miss breaks it, and its agents may run out and stop, a
+% stopped agent still counting as monitoring). Runs with window misses are drawn as crosses and
+% left out of the means and of the estimate of Pbar
 mac = strings(0, 1);
 idx = find(L.Study == "S6");
 if isempty(idx), return; end
@@ -264,7 +267,7 @@ Q = b.capacity; Emin = 0.1 * Q;
 f = figure('Visible', 'off', 'Units', 'inches', 'Position', [0 0 7.16 2.6]);
 tiledlayout(1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
 cols = lines(5);
-bad = 0; held = 0;
+bad = 0; held = 0; missed = 0; missedOut = 0;
 for m = 1:2
     nexttile; hold on; grid on; box on;
     for n = 2:6
@@ -275,20 +278,29 @@ for m = 1:2
         Pc = arrayfun(@(r) r.params.StationPower, Rk);
         x = Pc / (ceil(n / m) * PI);
         share = arrayfun(@(r) r.metrics.MonitoringShare, Rk);
-        Pbar = arrayfun(@(r) r.metrics.EnergyUsed * 1000 / (r.nAgents * r.t(end) * max(r.metrics.MonitoringShare, 1) / 100), Rk);
-        [xs, o] = sort(x); ys = share(o);
+        clean = arrayfun(@(r) r.windowMisses == 0, Rk);
+        % Pbar: the mean power away from the station (Prop. 4), the energy drawn over the agents'
+        % time not charging (their time less the dock time in use)
+        Pbar = arrayfun(@(r) r.metrics.EnergyUsed * 1000 / (r.nAgents * r.t(end) - r.busy * m * r.t(end)), Rk);
+        if any(~clean)
+            plot(x(~clean), share(~clean), 'x', 'Color', cols(n - 1, :), 'MarkerSize', 4, 'HandleVisibility', 'off');
+        end
+        if ~any(clean), continue; end
+        [xs, o] = sort(x(clean)); ys = share(clean); ys = ys(o);
         [ux, ~, g] = unique(round(xs, 6));
         my = accumarray(g, ys(:), [], @mean);
         plot(ux, my, 'o-', 'Color', cols(n - 1, :), 'MarkerSize', 3, 'LineWidth', 1, 'DisplayName', sprintf('$n = %d$', n));
-        pb = mean(Pbar);
+        pb = mean(Pbar(clean));
         pcs = linspace(min(Pc), max(Pc), 50);
         fstar = min((pcs - PI) ./ (pcs - PI + pb), m * (pcs - PI) ./ (n * pb));
         fmva = arrayfun(@(pc) mvaShare(n, m, (Q - Emin) / pb, (Q - Emin) / (pc - PI)), pcs);
         plot(pcs / (ceil(n / m) * PI), 100 * fstar, '--', 'Color', cols(n - 1, :), 'HandleVisibility', 'off');
         plot(pcs / (ceil(n / m) * PI), 100 * fmva, ':', 'Color', cols(n - 1, :), 'LineWidth', 1.1, 'HandleVisibility', 'off');
-        ok = x >= 1 - 1e-9;
+        out = arrayfun(@(r) r.minSoc < 0.1 - 1e-3, Rk);
+        ok = x >= 1 - 1e-9 & clean;
         held = held + sum(ok);
-        bad = bad + sum(ok & arrayfun(@(r) r.minSoc < 0.1 - 1e-3, Rk));
+        bad = bad + sum(ok & out);
+        missed = missed + sum(~clean); missedOut = missedOut + sum(~clean & out);
     end
     xline(1, 'k-', 'LineWidth', 0.8, 'HandleVisibility', 'off');
     xlabel('$P_c/(\lceil n/m\rceil P_{\mathrm I})$', 'Interpreter', 'latex');
@@ -298,8 +310,10 @@ for m = 1:2
     if m == 2, legend('Interpreter', 'latex', 'Location', 'southeast', 'FontSize', 7); end
 end
 saveFig(f, fullfile(resDir, 'fig_stations'));
-mac(end+1, 1) = macro("StationRunsHeld", held, '%d');
-mac(end+1, 1) = macro("StationRunsOut", bad, '%d');
+mac(end+1, 1) = macro("StationRunsHeld", held, '%d');   % Lemma 4 and As. 3 hold
+mac(end+1, 1) = macro("StationRunsOut", bad, '%d');     % ... and an agent went below the reserve
+mac(end+1, 1) = macro("StationRunsMissed", missed, '%d');          % an initial window held no free slot
+mac(end+1, 1) = macro("StationRunsMissedOut", missedOut, '%d');    % ... and an agent went below the reserve
 end
 
 function f = mvaShare(n, m, Z, S)
