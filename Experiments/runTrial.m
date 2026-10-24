@@ -71,6 +71,14 @@ end
 starts = parseStarts(p.AgentStarts, stored);
 if keepAgents
     assert(~isempty(model.agents), 'runTrial:AgentSettings', 'AgentSettings "layout": %s stores no agents', char(p.Layout));
+    if isnumeric(p.AgentStarts) && numel(p.AgentStarts) == numel(model.agents)
+        for k = 1:numel(model.agents)   % explicit start targets move the layout's agents there
+            a = model.agents(k); pos = model.targets(p.AgentStarts(k)).position;
+            a.initialPosition = pos(:)'; a.initialTargetIdx = p.AgentStarts(k);
+            a.current_target_idx = p.AgentStarts(k); a.state.pos = pos(:)';
+        end
+        stored = p.AgentStarts(:)';
+    end
     starts = stored;
 end
 if ~isempty(starts), p.NumAgents = numel(starts); end

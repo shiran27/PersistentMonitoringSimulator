@@ -603,9 +603,11 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             ts = st.slotLength(agent, obj.socMin);
             bat = agent.battery;
             e = tFree + obj.routes.T(i, col) + obj.messageDelay + obj.marginT;
+            if initial && i == s, e = tFree + obj.messageDelay; end   % at its station: no transit to be late
             l = t + (bat.remaining - obj.socMin * bat.capacity - obj.routes.D(i, col) - obj.marginE) / bat.idleDraw();
             G = obj.grids(s);
             kLo = max(ceil(e / ts - 1e-9), 0); kHi = floor(l / ts + 1e-9);
+            if initial && i == s, kLo = max(floor(e / ts + 1e-9), 0); end   % at its station: the slot in progress too
             if kHi + 1 > size(G, 2), G(:, end+1:kHi + 1) = 0; end
             ks = kHi:-1:kLo;                    % "b": the latest first
             if obj.bookingStrategy ~= "b"       % "a", "R", "e": nearest the need at the mean power since the last charge
