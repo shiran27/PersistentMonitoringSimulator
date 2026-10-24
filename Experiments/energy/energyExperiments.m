@@ -10,6 +10,8 @@ function out = energyExperiments(mode, opts)
 %   S5 booking   EA-SO: strategies R (without and with the one-slot report deadband), a, b, e;
 %                R with the deadband at delta = 1 s and 5 s
 %   S6 stations  Energy_Sweep_m<1|2>_n<2..6> with P_c at 0.8 to 2 times ceil(n/m) P_I
+%   S6b          Lemma 4 at its bound: the same layouts (not m = 2, n = 2, whose bound P_c = P_I gives
+%                no slot), every agent full at its station, P_c at 1.001 and 1.25 times the bound
 %   S7 charging  Battery1RC: constant power, CC-CV, CC-CV with a tail slot, swapping (60 s)
 %   S8 physical  DiffDrive agents without margins, then with margins from their largest errors
 %   S9 stopping  Office without a station: ED-ORHC-SO and the K-weighted method (EA with
@@ -195,6 +197,19 @@ if ~opts.Quick
         p = method("EA-SO", base(sc, T, s), st); p.Policy_objectiveForm = "alphaH";
         add("S3", sc, "alphaH", s, "x1", p, "S2|" + sc + "|EA-SO|1");
     end, end
+end
+% S6b (appended 2026-10-24): every agent starts full at its station, so each initial window
+% [0, L] holds ceil(n/m) grid starts (As. 3) and Lemma 4 is tested on its own. "At the bound" is
+% 1.001x: at exactly 1x the policy's energy margin (about 0.1 s of idling) leaves out the start at L
+if ~opts.Quick
+    for m = 1:2, for n = 2:6, for f = [1.001 1.25], for s = seeds3
+        if ceil(n / m) == 1, continue; end
+        sc = sprintf("Energy_Sweep_m%d_n%d", m, n);
+        p = method("EA-SO", base(sc, T, s), st);
+        p.StationPower = f * ceil(n / m) * PI;
+        p.AgentStarts = 15 * ones(1, n);   % the station (target 15 of the office)
+        add("S6b", sc, "EA-SO", s, sprintf("x%g", f), p);
+    end, end, end, end
 end
 L = cell2table(rows, 'VariableNames', {'Study', 'Scenario', 'Method', 'Seed', 'Variant', 'Params', 'Needs'});
 end

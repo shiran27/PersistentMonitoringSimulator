@@ -21,6 +21,7 @@ mac = [setupMacros(); profileMacros()];
 mac = [mac; tableMain(T, resDir)];
 mac = [mac; tableAblations(T, resDir)];
 mac = [mac; stationsFigure(L, runDir, resDir)];
+mac = [mac; stationsAtBound(L, runDir)];
 mac = [mac; physicalResults(L, T, runDir, resDir)];
 mac = [mac; stoppingResults(L, runDir, resDir)];
 mainFigure(L, runDir, resDir);
@@ -336,6 +337,26 @@ mac(end+1, 1) = macro("StationRunsMissed", missed, '%d');          % an initial 
 mac(end+1, 1) = macro("StationRunsMissedOut", missedOut, '%d');    % ... and an agent went below the reserve
 mac(end+1, 1) = macro("StationRunsBelowNoMiss", belowClean, '%d');  % below the bound, no initial miss
 mac(end+1, 1) = macro("StationRunsBelowNoMissOut", belowOut, '%d'); % ... and an agent went below the reserve
+end
+
+function mac = stationsAtBound(L, runDir)
+% S6b: runs at 1.001x and 1.25x Lemma 4's bound with every agent full at its station (As. 3
+% holds), and how many had an agent below the reserve
+mac = strings(0, 1);
+for v = ["x1.001", "x1.25"]
+    idx = find(L.Study == "S6b" & L.Variant == v);
+    n = 0; out = 0; misses = 0;
+    for id = idx'
+        f = fullfile(runDir, sprintf('%04d.mat', id));
+        if ~isfile(f), continue; end
+        r = load(f, 'r').r;
+        n = n + 1; out = out + (r.minSoc < 0.1 - 1e-3); misses = misses + (r.windowMisses > 0);
+    end
+    key = "AtBound"; if v == "x1.25", key = "Above"; end
+    mac(end+1, 1) = macro("StationBRuns" + key, n, '%d'); %#ok<AGROW>
+    mac(end+1, 1) = macro("StationBRuns" + key + "Out", out, '%d'); %#ok<AGROW>
+    mac(end+1, 1) = macro("StationBRuns" + key + "Misses", misses, '%d'); %#ok<AGROW>
+end
 end
 
 function f = mvaShare(n, m, Z, S)
