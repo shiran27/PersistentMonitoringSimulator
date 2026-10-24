@@ -14,6 +14,7 @@ function out = energyExperiments(mode, opts)
 %                no slot), every agent full at its station, P_c at 1.001 and 1.25 times the bound
 %   S7 charging  Battery1RC: constant power, CC-CV, CC-CV with a tail slot, swapping (60 s)
 %   S8 physical  DiffDrive agents without margins, then with margins from their largest errors
+%   S2 (final)   BA-SO: BA with SO robots within the robots' limits (appended, 2026-10-24)
 %   S9 stopping  Office without a station: ED-ORHC-SO and the K-weighted method (EA with
 %                hhat_E = 0, omega = kappa J_R/(N P)), stopped at T, at an energy or at a visit count
 % Run from EnergyResults.mlx (Experiments/energy/energyResultsSource.m), or directly:
@@ -187,11 +188,12 @@ for s = seeds5
     end
 end
 % Appended after the first full run (2026-10-24), so the ids above stay: S3's hhat_E priced at the
-% plan's end ("plan"), 10 seeds, and alphaH x1 on seeds 6-10, so both stand next to S2's 10 seeds
+% agent's arrival ("arrival", the form before "plan" became the default), 10 seeds, and alphaH x1
+% on seeds 6-10, so both stand next to S2's 10 seeds
 if ~opts.Quick
     for sc = setups, for s = seeds
-        p = method("EA-SO", base(sc, T, s), st); p.Policy_energyTerm = "plan";
-        add("S3", sc, "dinkelbach", s, "plan", p);
+        p = method("EA-SO", base(sc, T, s), st); p.Policy_energyTerm = "arrival";
+        add("S3", sc, "dinkelbach", s, "arrival", p);
     end, end
     for sc = setups, for s = 6:10
         p = method("EA-SO", base(sc, T, s), st); p.Policy_objectiveForm = "alphaH";
@@ -210,6 +212,17 @@ if ~opts.Quick
         p.AgentStarts = 15 * ones(1, n);   % the station (target 15 of the office)
         add("S6b", sc, "EA-SO", s, sprintf("x%g", f), p);
     end, end, end, end
+end
+% Final run (appended 2026-10-24): BA with SO robots in S2, and S3's dinkelbach without the energy
+% price (priceScale 0, omega = 0: the objective is J alone, with the booking rows)
+if ~opts.Quick
+    for sc = setups, for s = seeds
+        add("S2", sc, "BA-SO", s, "", method("BA-SO", base(sc, T, s), st));
+    end, end
+    for sc = setups, for s = seeds
+        p = method("EA-SO", base(sc, T, s), st); p.Policy_priceScale = 0;
+        add("S3", sc, "dinkelbach", s, "price 0", p);
+    end, end
 end
 L = cell2table(rows, 'VariableNames', {'Study', 'Scenario', 'Method', 'Seed', 'Variant', 'Params', 'Needs'});
 end
@@ -234,6 +247,8 @@ switch m
                     p.Policy_transit = "FO-0"; p.Agent_profile = "FO-0";
     case "BA",      p.Policy = "Battery-Aware ED-RHC"; p.Agent_profile = "FO-0"; p.Policy_socMin = 0.1;
                     p.Policy_dockAware = true;   % uses every dock of a station
+    case "BA-SO",   p.Policy = "Battery-Aware ED-RHC"; p.Agent_profile = "SO"; p.Policy_transit = "SO";
+                    p.Policy_socMin = 0.1; p.Policy_dockAware = true;
     case "ED-RHC",  p.Policy = "ED-RHC"; p.Policy_alpha = 0.5; p.Agent_profile = "FO-0"; p.Agent_stopWhenEmpty = false;
     case "ED-RHC-alpha", p.Policy = "ED-RHC"; p.Policy_alpha = "nominal"; p.Agent_profile = "FO-0"; p.Agent_stopWhenEmpty = false;
     case "ED-ORHC-SO", p.Policy = "ED-ORHC-SO"; p.Agent_profile = "SO"; p.Agent_stopWhenEmpty = false;
@@ -241,12 +256,12 @@ switch m
     case "ED-ORHC-FO-3", p.Policy = "ED-ORHC-FO-3"; p.Agent_profile = "FO-3"; p.Agent_stopWhenEmpty = false;
     case "ED-ORHC-FO-3-bat", p.Policy = "ED-ORHC-FO-3"; p.Agent_profile = "FO-3";
 end
-if startsWith(m, "ED-ORHC"), p = robotLimits(p); end
+if startsWith(m, "ED-ORHC") || m == "BA-SO", p = robotLimits(p); end   % SO plans within the robots' limits
 if startsWith(m, "ED-"), p.Policy_avoidStations = true; end   % no accidental visits to or charging at stations
 end
 
 function p = robotLimits(p)
-% ED-ORHC plans its profiles within the energy robots' limits (2 m/s, 1 m/s^2), as the other
+% ED-ORHC and BA-SO plan their profiles within the energy robots' limits (2 m/s, 1 m/s^2), as the other
 % methods do through the agents' limits (its own default is none, and an Abstract Agent keeps
 % any plan)
 p.Policy_speedLimit = 2; p.Policy_accelLimit = 1;
@@ -285,6 +300,36 @@ switch L.Study(id)
 end
 end
 
+function [n, mu] = dwellStats(L, model)
+% Dwells at monitoring targets (stations left out): stays of at least 0.2 s at rest within 0.5 of a
+% target, all agents together; their number and mean length [s]
+tp = reshape([model.targets.position], 2, [])';
+isSt = arrayfun(@(t) isa(t, 'ChargingStation'), model.targets);
+d = [];
+for a = 1:size(L.pos, 2)
+    p = squeeze(L.pos(:, a, :)); v = squeeze(L.vel(:, a, :));
+    [dmin, node] = min(sqrt((p(:, 1) - tp(:, 1)').^2 + (p(:, 2) - tp(:, 2)').^2), [], 2);
+    node(dmin > 0.5 | vecnorm(v, 2, 2) > 0.05) = 0;
+    st = find([true; node(2:end) ~= node(1:end-1)]); en = [st(2:end) - 1; numel(node)];
+    len = (en - st + 1) * L.dt; k = node(st);
+    keep = k > 0 & len >= 0.2;
+    keep(keep) = ~isSt(k(keep));
+    d = [d; len(keep)]; %#ok<AGROW>
+end
+n = numel(d); mu = mean(d);
+end
+
+function s = plugInSoc(L)
+% Mean SOC at the start of the charging sessions (an SOC that starts rising), all agents together
+on = [false(1, size(L.soc, 2)); diff(L.soc) > 1e-9];
+s0 = [];
+for a = 1:size(L.soc, 2)
+    k = find(diff([false; on(:, a)]) == 1);
+    s0 = [s0; L.soc(max(k - 1, 1), a)]; %#ok<AGROW>
+end
+s = mean(s0);
+end
+
 function r = loadRun(runDir, id)
 S = load(runFile(runDir, id), 'r'); r = S.r;
 end
@@ -313,6 +358,8 @@ r = struct('id', id, 'study', info.Study, 'scenario', info.Scenario, 'method', i
     'meanPower', sum(L.energy(end, :)) / (numel(ags) * L.t(end)), 'minSoc', min(L.soc(:)), ...
     'stats', struct(), 'charges', NaN, 'modeTime', [], 'windowMisses', NaN, 'transits', [], ...
     'socErrMax', NaN, 'trueMinSoc', NaN, 'violations', NaN, 'delays', NaN, 'params', p);
+[r.dwells, r.dwellMean] = dwellStats(L, o.model);
+r.socIn = plugInSoc(L);
 st = o.model.targets(arrayfun(@(t) isa(t, 'ChargingStation'), o.model.targets));
 r.busy = NaN;   % share of the dock time in use
 if ~isempty(st), r.busy = sum([st.dockTime]) / (sum([st.docks]) * L.t(end)); end
