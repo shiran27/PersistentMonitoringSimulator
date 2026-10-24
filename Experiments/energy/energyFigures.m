@@ -31,9 +31,9 @@ for k = 1:numel(rhos)
     plot(x, speedAt(P, x) / (y / rhos(k)), 'LineWidth', 1.1, 'Color', cols(k, :), ...
         'DisplayName', sprintf('$\\rho = %d$ s', rhos(k)));
 end
-xlabel('$t/\rho$', 'Interpreter', 'latex'); ylabel('$v(t)\,\rho/y$', 'Interpreter', 'latex');
-title('(a) SO profiles', 'Interpreter', 'latex', 'FontWeight', 'normal');
-legend('Interpreter', 'latex', 'Location', 'south', 'FontSize', 7);
+xlabel({'Normalized time: $t/\rho$', '(a) SO profiles'}, 'Interpreter', 'latex');
+ylabel('Normalized speed: $v(t)\,\rho/y$', 'Interpreter', 'latex');
+legend('Interpreter', 'latex', 'Location', 'south', 'FontSize', 8, 'Box', 'on');
 style(gca);
 % (b) motion loss against rho
 nexttile; hold on; grid on; box on;
@@ -45,18 +45,18 @@ plot(r, Lso, 'LineWidth', 1.1, 'Color', cols(1, :), 'DisplayName', 'SO (Thm. 1)'
 plot(r, Lcub, '--', 'LineWidth', 1.1, 'Color', cols(2, :), 'DisplayName', '$c_2 = 0$ optimum');
 plot(r, Lfo3, 'LineWidth', 1.1, 'Color', cols(3, :), 'DisplayName', 'FO-3 (Thm. 3)');
 set(gca, 'YScale', 'log');
-xlabel('$\rho$ [s]', 'Interpreter', 'latex'); ylabel('$L$ [J]', 'Interpreter', 'latex');
-title('(b) motion loss', 'Interpreter', 'latex', 'FontWeight', 'normal');
-legend('Interpreter', 'latex', 'Location', 'northeast', 'FontSize', 7);
+xlabel({'Transit time: $\rho$ [s]', '(b) Motion loss'}, 'Interpreter', 'latex');
+ylabel('Motion loss: $L$ [J]', 'Interpreter', 'latex');
+legend('Interpreter', 'latex', 'Location', 'northeast', 'FontSize', 8, 'Box', 'on');
 style(gca);
 % (c) FO-3's acceleration time
 nexttile; hold on; grid on; box on;
 tau = arrayfun(@(q) fo3Tau(y, q, nu), r);
 plot(r, tau ./ r, 'LineWidth', 1.1, 'Color', cols(3, :), 'DisplayName', '$c_2 > 0$');
 plot(r, ones(size(r)) / 3, 'k--', 'LineWidth', 1.1, 'DisplayName', '$c_2 = 0$');
-xlabel('$\rho$ [s]', 'Interpreter', 'latex'); ylabel('$\tau^\ast/\rho$', 'Interpreter', 'latex');
-title('(c) FO-3 acceleration time', 'Interpreter', 'latex', 'FontWeight', 'normal');
-legend('Interpreter', 'latex', 'Location', 'southwest', 'FontSize', 7);
+xlabel({'Transit time: $\rho$ [s]', '(c) FO-3 acceleration time'}, 'Interpreter', 'latex');
+ylabel('Acceleration share: $\tau^\ast/\rho$', 'Interpreter', 'latex');
+legend('Interpreter', 'latex', 'Location', 'southwest', 'FontSize', 8, 'Box', 'on');
 ylim([0 0.4]);
 style(gca);
 saveFig(f, fullfile(outDir, "fig_profiles"));
@@ -104,9 +104,9 @@ for k = 1:numel(lays)
     for q = 1:size(s.targets, 1)
         st = find(s.chargers == q, 1);
         if isempty(st)
-            plot(s.targets(q, 1), s.targets(q, 2), 'o', 'MarkerSize', 7, 'MarkerFaceColor', [0.75 0.85 1.0], ...
+            plot(s.targets(q, 1), s.targets(q, 2), 'o', 'MarkerSize', 10, 'MarkerFaceColor', [0.75 0.85 1.0], ...
                 'MarkerEdgeColor', [0.1 0.2 0.5]);
-            text(s.targets(q, 1), s.targets(q, 2), sprintf('%d', q), 'FontSize', 4.5, ...
+            text(s.targets(q, 1), s.targets(q, 2), sprintf('%d', q), 'FontSize', 6.5, ...
                 'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', 'Interpreter', 'latex');
         else   % a station (its docks are in the title)
             plot(s.targets(q, 1), s.targets(q, 2), 's', 'MarkerSize', 9, 'MarkerFaceColor', [1 0.82 0.1], ...
@@ -117,8 +117,8 @@ for k = 1:numel(lays)
         startMarker(s.targets(a, :), 2.0, 3.8);
     end
     set(ax, 'YDir', 'normal', 'XTick', [], 'YTick', [], 'XLim', [0 100], 'YLim', [0 100]);
-    title(sprintf('%s ($M = %d$, $N = %d$)', names(k), size(s.targets, 1) - numel(s.chargers), ...
-        numel(s.agentStarts)), 'Interpreter', 'latex', 'FontWeight', 'normal', 'FontSize', 8);
+    xlabel(sprintf('(%s) %s ($M = %d$, $N = %d$)', char('a' + k - 1), names(k), size(s.targets, 1) - numel(s.chargers), ...
+        numel(s.agentStarts)), 'Interpreter', 'latex', 'FontSize', 8);   % a subcaption, not a title
 end
 saveFig(f, fullfile(outDir, "fig_setups"));
 end

@@ -26,7 +26,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
     %    is affordable or at its latest departure, follows the least-energy route without
     %    covering targets, waits there until t_a (not charging; with earlyStart it starts as soon
     %    as its dock is idle and no other booking on it comes first, and holds the dock through
-    %    its slot), charges until full or the end of its slot, and books its next slot. With
+    %    its slot), charges until full or the end of its slot, and books its next slot (holdSlot
+    %    "window", rule (v): full before its slot's end, it leaves only with a free slot in its
+    %    window, and otherwise stays docked to the slot's end, where Lemma 4's window starts). With
     %    pullForward, a station offers time freed on a dock (a session that ended full before its
     %    slot's end) to the first booked agent in line (one that asked for an earlier slot, then
     %    the earliest booking) that is at most half full, can reach the dock in that time and use
@@ -61,7 +63,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
     %    waiting at its station charges on any idle dock until the next slot booked on that dock
     %    (or until full), then books again nearest its new predicted need. Station exit: an agent
     %    at a station whose neighbors are all covered heads for the nearest uncovered target,
-    %    passing through covered ones, instead of waiting there.
+    %    passing through covered ones, instead of waiting there; each hop keeps both booking rows
+    %    (exitCheck), else the agent stays as with no affordable neighbor.
     % mu_a weights each target's d hhat_k/d delta_k by the agent's share of its recent visits
     % (priceShare). Stations charge only the agents in their slots (Agent.chargeAllowed is false
     % otherwise, also for an agent dwelling at a station).
@@ -118,6 +121,12 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                                        % (the home booking is released after the grant)
         tailSlot = false               % CC-CV: leave by the marginal value theorem, and stay for the
                                        % next slot on the dock if it is free and worth it (Sec. 6.11)
+        holdSlot = "window"            % "slot": a session lasts to its slot's end (a full agent stays
+                                       % docked), as Lemma 4's proof assumes; "window": a session that
+                                       % ends full before its slot's end stays docked only while no free
+                                       % slot lies in the agent's window; "off": it ends when full
+        exitCheck = true               % a station-exit hop must keep both booking rows (else the agent
+                                       % stays, as with no affordable neighbor); false: exits are unchecked
         fillIn = true                  % an agent waiting at its station charges on any idle dock until
                                        % the next slot booked there, then books again
         minFill = 10                   % shortest fill-in worth starting [s]
@@ -192,6 +201,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         lastE                          % agent index -> [time, energy left] at its last step charging
         chargeDock                     % agent index -> dock it charges on
         exitDest                       % agent index -> target it heads for through covered ones
+        holds                          % agents docked full to their slot's end (holdSlot "window")
         lastReport                     % "R": agent index -> g_need of its last report
     end
 
@@ -231,6 +241,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                     obj.startCharging(agent, model, i, simTime);
                 case "charging"
                     if obj.extendTail(agent, i, simTime), return; end
+                    if obj.holdToSlotEnd(agent, model, i, simTime), return; end
                     obj.finishCharging(agent, model, i, simTime);
                     obj.forgetAgent(agent.index);
                     cmd = obj.depart(agent, model, adj, i, simTime);
@@ -275,7 +286,8 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             end
             if obj.modeOf(agent) == "charging"
                 bat = agent.battery;
-                if isa(bat, 'Battery1RC') && bat.full && agent.dwellRemaining > 0
+                if isa(bat, 'Battery1RC') && bat.full && agent.dwellRemaining > 0 && obj.holdSlot ~= "slot" ...
+                        && ~isKey(obj.holds, agent.index)
                     agent.dwellRemaining = 0;          % the charger reports it full
                 elseif obj.tailSlot && agent.dwellRemaining > 0 && ~obj.worthCharging(agent, simTime)
                     agent.dwellRemaining = 0;          % the marginal value theorem: leave now
@@ -520,6 +532,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.lastE = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.chargeDock = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.exitDest = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.holds = containers.Map('KeyType', 'double', 'ValueType', 'logical');
             obj.lastReport = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.modeTime = zeros(0, 4);
             obj.homes = containers.Map('KeyType', 'double', 'ValueType', 'any');
@@ -1421,6 +1434,18 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             end
         end
 
+        function ok = exitAffordable(obj, agent, model, i, j, pts, rho, t)
+            % exitCheck: does the exit hop i -> j in rho keep the booking's energy row
+            % E^ex_ij(rho) + D(j, sigma) + P_I (t_a - t) <= E - E_min and its time row?
+            obj.hood.t = t;
+            tab = obj.energyTable(agent, model, i, j, pts);
+            ok = tab.E(rho) <= obj.energyBudget(agent, j);
+            bk = obj.activeBooking(agent);
+            if ~ok || isempty(bk), return; end
+            col = obj.stationColumn(bk.station);
+            ok = t + rho + obj.routes.T(j, col) + obj.messageDelay + obj.marginT <= obj.rowStarts(agent, bk);
+        end
+
         function tf = atStationAllCovered(obj, agent, model, adj, i)
             % Is the agent at a station whose monitoring neighbors are all covered?
             tf = false;
@@ -1479,13 +1504,19 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             [~, q] = min(dist(cand)); dest = cand(q);
             nxt = dest;
             while prev(nxt) ~= i, nxt = prev(nxt); end
+            pts = model.findEdge(i, nxt).curvePoints;
+            rho = max(agent.limitTransit(pts), sum(vecnorm(diff(pts, 1, 1), 2, 2)) / agent.state.maxSpeed);
+            if obj.exitCheck && ~obj.exitAffordable(agent, model, i, nxt, pts, rho, t)
+                if isKey(obj.exitDest, agent.index), remove(obj.exitDest, agent.index); end
+                obj.modes(agent.index) = "monitor";
+                return;
+            end
             if obj.modeOf(agent) ~= "exit", obj.stats.exits = obj.stats.exits + 1; end
             obj.modes(agent.index) = "exit";
             obj.exitDest(agent.index) = dest;
             obj.forgetAgent(agent.index);
             cmd = struct('kind', "move", 'targetIdx', nxt);
-            pts = model.findEdge(i, nxt).curvePoints;
-            agent.transitTime = max(agent.limitTransit(pts), sum(vecnorm(diff(pts, 1, 1), 2, 2)) / agent.state.maxSpeed);
+            agent.transitTime = rho;
             agent.transitProfile = obj.transit;
             agent.transitLimits = [agent.segmentSpeedLimit(pts), agent.state.maxAccel];
             obj.noteDeparture(agent, model, i, t);
@@ -1511,6 +1542,34 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.stats.tails = obj.stats.tails + 1;
             obj.note(5, agent, i, t);
             ok = true;
+        end
+
+        function tf = holdToSlotEnd(obj, agent, model, i, t)
+            % holdSlot "window": a session that ended full before its slot's end stays docked to
+            % that end unless a free slot lies in the agent's window now. Lemma 4's proof starts
+            % the window at the slot's end; leaving earlier is safe only with a slot in hand
+            tf = false;
+            if obj.holdSlot ~= "window" || isKey(obj.holds, agent.index) || ~isKey(obj.bookings, agent.index), return; end
+            b = obj.bookings(agent.index);
+            slotEnd = b.start + b.length;
+            if t >= slotEnd - 1e-6 || obj.slotInWindow(agent, model, i, t), return; end
+            obj.holds(agent.index) = true;
+            agent.dwellRemaining = slotEnd - t;
+            tf = true;
+        end
+
+        function tf = slotInWindow(obj, agent, model, i, t)
+            % Would book() find a free dock-slot in the agent's window from i at t (its own
+            % cells, freed when it books, count as free)?
+            s = obj.homes(agent.index); col = obj.stationColumn(s);
+            ts = model.targets(s).slotLength(agent, obj.socMin); bat = agent.battery;
+            e = t + obj.routes.T(i, col) + obj.messageDelay + obj.marginT;
+            l = t + (bat.remaining - obj.socMin * bat.capacity - obj.routes.D(i, col) - obj.marginE) / bat.idleDraw();
+            G = obj.grids(s);
+            kLo = max(ceil(e / ts - 1e-9), 0); kHi = floor(l / ts + 1e-9);
+            if kHi + 1 > size(G, 2), tf = kHi >= kLo; return; end   % book() extends the grid with free slots
+            cells = G(:, kLo + 1:kHi + 1);
+            tf = any(cells(:) == 0 | cells(:) == agent.index);
         end
 
         function ok = worthCharging(obj, agent, t)
@@ -1552,6 +1611,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             end
             obj.lastE(agent.index) = [t, agent.battery.remaining];
             obj.chargeDock(agent.index) = [b.station, b.dock];
+            if obj.holdSlot == "slot", toFull = Inf; end
             agent.dwellRemaining = max(min(b.start + b.length - t, toFull), 1e-3);
             obj.sessions(end+1) = struct('agent', agent.index, 'station', i, 'dock', b.dock, ...
                 'slot', b.start, 'slotEnd', b.start + b.length, 'arrive', b.arrive, 'start', t, 'stop', NaN, ...
@@ -1566,6 +1626,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             end
             obj.unbook(agent);
             if isKey(obj.tails, agent.index), remove(obj.tails, agent.index); end
+            if isKey(obj.holds, agent.index), remove(obj.holds, agent.index); end
             if isKey(obj.chargeDock, agent.index), remove(obj.chargeDock, agent.index); end
             obj.modes(agent.index) = "monitor";
             agent.chargeAllowed = false;

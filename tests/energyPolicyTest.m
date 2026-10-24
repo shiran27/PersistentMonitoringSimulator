@@ -9,6 +9,8 @@ function energyPolicyTest()
 %    a 1 s message delay, whose protocol must run): no battery goes below the reserve E_min = socMin Q; no two
 %    sessions overlap on a dock; every agent arrived by its slot and every session ended by its
 %    slot's end (early starts on idle docks allowed); every booking lay in its agent's window.
+%    Lemma 4 at its bound: six agents start full at a one-dock station charging at 1.001x the
+%    bound; none goes below the reserve and no booking leaves its window.
 % 3. Bookings are released at the end of the mission; time in the modes adds up to T.
 % 4. runTrial 'AgentSettings', "layout" keeps the layout's power model; stations charge only
 %    agents with chargeAllowed.
@@ -80,6 +82,18 @@ for r = 1:size(runs, 1)   % layout, booking strategy, message delay [s]
     Eend = arrayfun(@(a) a.battery.remaining, out.model.agents);
     check(all(Eend >= pol.socMin * Q - 1) || any(left), sprintf('%s: every agent ends above its reserve or still booked', setup));
 end
+
+% ---- 2b. Lemma 4 at its bound ----
+% six agents full at a one-dock station with P_c = 1.001 ceil(n/m) P_I: idling until each slot is
+% all they can afford, so a session that ends before its slot's end or an unchecked station exit
+% breaks the window (rule (v), holdSlot "window"; exitCheck)
+b = Battery(CapacityWh=9); b.R0 = 0.1; b.Voc = 14.4;
+q = dock; q.Layout = "Energy/Energy_Sweep_m1_n6.mat"; q.AgentStarts = 15 * ones(1, 6); q.EndTime = 1800;
+q.StationPower = 1.001 * 6 * b.idleDraw();
+out = runTrial(q); pol = out.policy; minSoc = min(out.log.soc(:));
+check(minSoc >= pol.socMin - 1e-3 && pol.windowMisses == 0, sprintf(['Lemma 4 at 1.001x its bound (6 agents, ' ...
+    '1 dock, all full at the station): lowest SOC %.2f%%, %d window misses, %d sessions'], 100 * minSoc, ...
+    pol.windowMisses, numel(pol.sessions)));
 
 % ---- 4. Settings and admission ----
 q = dock; q.EndTime = 1; out = runTrial(q);
