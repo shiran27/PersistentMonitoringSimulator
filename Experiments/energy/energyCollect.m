@@ -38,6 +38,20 @@ function v = mfield(s, f)
 if isstruct(s) && isfield(s, f), v = s.(f); else, v = NaN; end
 end
 
+function R = stackRuns(R)
+% One struct array from runs saved at different times: fields a run lacks (added later, such as
+% the dwell statistics) are filled with NaN
+F = cellfun(@fieldnames, R, 'UniformOutput', false);
+names = unique(string(vertcat(F{:})), 'stable');
+for k = 1:numel(R)
+    for f = setdiff(names, string(fieldnames(R{k})))'
+        R{k}.(f) = NaN;
+    end
+    R{k} = orderfields(R{k}, cellstr(names));
+end
+R = [R{:}];
+end
+
 function v = rfield(r, f)
 % a run's field, NaN for runs saved before it existed
 v = NaN; if isfield(r, f), v = r.(f); end
@@ -332,7 +346,7 @@ for id = idx'
     if isfile(f), R{end+1} = load(f, 'r').r; end %#ok<AGROW>
 end
 if isempty(R), return; end
-R = [R{:}];
+R = stackRuns(R);
 b = Battery(CapacityWh=9); b.R0 = 0.1; b.Voc = 14.4; PI = b.idleDraw();
 Q = b.capacity; Emin = 0.1 * Q;
 f = figure('Visible', 'off', 'Units', 'inches', 'Position', [0 0 7.16 2.6]);
@@ -456,7 +470,7 @@ for id = idx'
     if isfile(f), R{end+1} = load(f, 'r').r; end %#ok<AGROW>
 end
 if isempty(R), return; end
-R = [R{:}];
+R = stackRuns(R);
 tr = [R.transits];
 arr = [tr.actual] - [tr.planned];
 en = 100 * ([tr.cellE] ./ [tr.planE] - 1);
@@ -519,7 +533,7 @@ for id = idx'
     if isfile(f), R{end+1} = load(f, 'r').r; end %#ok<AGROW>
 end
 if isempty(R), return; end
-R = [R{:}];
+R = stackRuns(R);
 seeds = unique([R.seed]);
 kap = @(r) str2double(extractAfter(r.variant, "kappa "));
 crit = ["time", "energy", "visits"];
