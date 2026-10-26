@@ -44,6 +44,10 @@ classdef (Abstract) Agent < handle & matlab.mixin.Heterogeneous
         battery                     % Battery (capacity, power model, energy drawn)
         stopWhenEmpty = false       % true: stop moving when the battery is empty (default:
                                     % the battery is only reported, as in the RHC papers)
+        maxNormalAccel = Inf        % normal acceleration available in turns, a_n (energy-aware
+                                    % paper, A1): curves limit the speed to sqrt(a_n / kappa)
+        chargeAllowed = true        % false: a station does not charge it (a policy waiting for
+                                    % a booked slot clears it; reset sets it again)
 
         color = [0.8 0.2 0.2]
         size = 8
@@ -88,6 +92,7 @@ classdef (Abstract) Agent < handle & matlab.mixin.Heterogeneous
             obj.peakSpeed = 0;
             obj.peakAccel = 0;
             obj.mode = "idle";
+            obj.chargeAllowed = true;
             obj.battery.reset();
         end
 
@@ -138,9 +143,61 @@ classdef (Abstract) Agent < handle & matlab.mixin.Heterogeneous
 
         function E = transitEnergy(obj, pts, rho)
             % Predicted battery energy [J] of a transit along pts (N x 2) taking rho, with the
-            % agent's own speed profile
+            % agent's own speed profile (under the full power model and with battery losses
+            % when its battery has c2 > 0 or R0 > 0)
             y = sum(vecnorm(diff(pts, 1, 1), 2, 2));
-            E = obj.battery.transitEnergy(rho, y, obj.accelEnergy(pts, rho));
+            if obj.battery.c2 == 0 && obj.battery.R0 == 0
+                E = obj.battery.transitEnergy(rho, y, obj.accelEnergy(pts, rho));
+            else
+                E = obj.battery.planEnergy(SpeedProfile.shape(obj.profile, y, rho, Inf, Inf, obj.motionNu()));
+            end
+        end
+
+        function vb = segmentSpeedLimit(obj, pts)
+            % Speed limit on a path (N x 2): maxSpeed, or lower where its curves would need more
+            % normal acceleration than maxNormalAccel, min(maxSpeed, sqrt(a_n/kappa)) with kappa
+            % the path's largest curvature (energy-aware paper, Assumption A1)
+            vb = obj.state.maxSpeed;
+            if isfinite(obj.maxNormalAccel)
+                vb = min(vb, sqrt(obj.maxNormalAccel / Agent.maxCurvature(pts)));
+            end
+        end
+
+        function rho = limitTransit(obj, pts)
+            % Shortest rest-to-rest transit along pts within the agent's own limits: accelerate
+            % at maxAccel, cruise at segmentSpeedLimit, brake (energy-aware paper, Lemma 1)
+            y = sum(vecnorm(diff(pts, 1, 1), 2, 2));
+            rho = SpeedProfile.minTransit(y, obj.segmentSpeedLimit(pts), obj.state.maxAccel);
+        end
+
+        function P = planProfile(obj, pts, rho, name)
+            % The least-loss profile <name> (default: the agent's own) of a transit along pts
+            % taking rho (at least limitTransit), within the agent's limits and under its power
+            % model (SpeedProfile.shape with nu = motionNu)
+            if nargin < 4, name = obj.profile; end
+            y = sum(vecnorm(diff(pts, 1, 1), 2, 2));
+            vb = obj.segmentSpeedLimit(pts);
+            if SpeedProfile.canonical(name) == "FO-0"   % jumps to its speed: no acceleration phase
+                rho = max(rho, y / vb);
+            else
+                rho = max(rho, SpeedProfile.minTransit(y, vb, obj.state.maxAccel));
+            end
+            P = SpeedProfile.shape(name, y, rho, vb, obj.state.maxAccel, obj.motionNu());
+        end
+
+        function [E, Eex] = transitPlanEnergy(obj, pts, rho, name)
+            % Battery energy E_ij [J] of a transit along pts taking rho with profile name, within
+            % the agent's limits and with battery losses, and its excess E^ex over idling for the
+            % same time (energy-aware paper, Sec. 3.3)
+            if nargin < 4, name = obj.profile; end
+            P = obj.planProfile(pts, rho, name);
+            E = obj.battery.planEnergy(P);
+            Eex = E - obj.battery.idleEnergy(P.rho);
+        end
+
+        function nu = motionNu(obj)
+            % sqrt(c2/c1) of the agent's power model: 0 unless its battery has c2 > 0
+            nu = sqrt(obj.battery.c2 / obj.battery.c1);
         end
 
         function Ja = accelEnergy(obj, pts, rho, name, vb, ub)
@@ -221,7 +278,7 @@ classdef (Abstract) Agent < handle & matlab.mixin.Heterogeneous
             rho = obj.transitTime;
             if ~(rho > 0), rho = SpeedProfile.defaultTransit(name, y, obj.state.maxSpeed); end
             rho = max(rho, SpeedProfile.minTransit(y, lim(1), lim(2)));
-            P = SpeedProfile.shape(name, y, rho, lim(1), lim(2));
+            P = SpeedProfile.shape(name, y, rho, lim(1), lim(2), obj.motionNu());
         end
 
         function [p, dir] = pointAt(~, L, l)
@@ -257,5 +314,20 @@ classdef (Abstract) Agent < handle & matlab.mixin.Heterogeneous
             obj.transitLimits = [Inf Inf];
         end
 
+    end
+
+    methods (Static)
+        function k = maxCurvature(pts)
+            % Largest curvature of a path (N x 2): the largest 1/radius of the circle through
+            % three consecutive points (the planners sample their arcs, so on an arc this is
+            % 1/radius); 0 for a straight path
+            k = 0;
+            for i = 2:size(pts, 1) - 1
+                a = pts(i, :) - pts(i - 1, :); b = pts(i + 1, :) - pts(i, :); c = a + b;
+                la = norm(a); lb = norm(b); lc = norm(c);
+                if la < 1e-12 || lb < 1e-12 || lc < 1e-12, continue; end
+                k = max(k, 2 * abs(a(1) * b(2) - a(2) * b(1)) / (la * lb * lc));
+            end
+        end
     end
 end

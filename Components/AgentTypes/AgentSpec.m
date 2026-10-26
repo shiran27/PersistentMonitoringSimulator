@@ -18,10 +18,17 @@ classdef AgentSpec
         kd double = NaN
         batteryWh double = NaN           % battery capacity [Wh] (NaN = Battery default)
         stopWhenEmpty double = NaN       % 1: the agent stops when its battery is empty (NaN = no)
+        motorC1 double = NaN             % full power model c1 and c3 (sets Battery gammaAcc and
+        motorC3 double = NaN             % alphaVel; NaN = Battery defaults)
+        motorC2 double = NaN             % Battery c2, power per unit squared speed (NaN = 0)
+        maxNormalAccel double = NaN      % normal acceleration in turns, a_n (NaN = Inf: no limit)
+        batteryR0 double = NaN           % Battery R0 and Voc: losses P + (R0/Voc^2) P^2 (NaN = none)
+        batteryVoc double = NaN
     end
 
     properties (Constant)
-        settings = ["maxSpeed", "maxAccel", "profile", "kp", "kd", "batteryWh", "stopWhenEmpty"]
+        settings = ["maxSpeed", "maxAccel", "profile", "kp", "kd", "batteryWh", "stopWhenEmpty", ...
+            "motorC1", "motorC2", "motorC3", "maxNormalAccel", "batteryR0", "batteryVoc"]
     end
 
     methods
@@ -35,11 +42,20 @@ classdef AgentSpec
                 opts.Kd double = NaN
                 opts.BatteryWh double = NaN
                 opts.StopWhenEmpty double = NaN
+                opts.MotorC1 double = NaN
+                opts.MotorC2 double = NaN
+                opts.MotorC3 double = NaN
+                opts.MaxNormalAccel double = NaN
+                opts.BatteryR0 double = NaN
+                opts.BatteryVoc double = NaN
             end
             obj.type = opts.Type; obj.maxSpeed = opts.MaxSpeed; obj.maxAccel = opts.MaxAccel;
             obj.profile = opts.Profile; obj.kp = opts.Kp; obj.kd = opts.Kd;
             obj.batteryWh = opts.BatteryWh;
             obj.stopWhenEmpty = opts.StopWhenEmpty;
+            obj.motorC1 = opts.MotorC1; obj.motorC2 = opts.MotorC2; obj.motorC3 = opts.MotorC3;
+            obj.maxNormalAccel = opts.MaxNormalAccel;
+            obj.batteryR0 = opts.BatteryR0; obj.batteryVoc = opts.BatteryVoc;
         end
 
         function a = spawn(obj, index, position, factory)
@@ -59,6 +75,13 @@ classdef AgentSpec
             if ~isnan(obj.kd), a.controller.kd = obj.kd; end
             if ~isnan(obj.batteryWh), a.battery.capacityWh = obj.batteryWh; end
             if ~isnan(obj.stopWhenEmpty), a.stopWhenEmpty = logical(obj.stopWhenEmpty); end
+            % c1 and c3 set gammaAcc and alphaVel only when they change (no round-off otherwise)
+            if ~isnan(obj.motorC1) && obj.motorC1 ~= a.battery.c1, a.battery.gammaAcc = obj.motorC1 * a.battery.eta; end
+            if ~isnan(obj.motorC2), a.battery.c2 = obj.motorC2; end
+            if ~isnan(obj.motorC3) && obj.motorC3 ~= a.battery.c3, a.battery.alphaVel = obj.motorC3 * a.battery.eta; end
+            if ~isnan(obj.maxNormalAccel), a.maxNormalAccel = obj.maxNormalAccel; end
+            if ~isnan(obj.batteryR0), a.battery.R0 = obj.batteryR0; end
+            if ~isnan(obj.batteryVoc), a.battery.Voc = obj.batteryVoc; end
         end
     end
 
@@ -68,7 +91,8 @@ classdef AgentSpec
             if nargin < 2, type = ""; end
             spec = AgentSpec(Type=type, MaxSpeed=a.state.maxSpeed, MaxAccel=a.state.maxAccel, ...
                 Profile=a.profile, Kp=a.controller.kp, Kd=a.controller.kd, BatteryWh=a.battery.capacityWh, ...
-                StopWhenEmpty=double(a.stopWhenEmpty));
+                StopWhenEmpty=double(a.stopWhenEmpty), MotorC1=a.battery.c1, MotorC2=a.battery.c2, MotorC3=a.battery.c3, ...
+                MaxNormalAccel=a.maxNormalAccel, BatteryR0=a.battery.R0, BatteryVoc=a.battery.Voc);
         end
     end
 end

@@ -32,6 +32,7 @@ classdef ComponentRegistry < handle
             obj.policies('ED-ORHC-SO')        = @() EDRHCPolicy(Transit="SO");
             obj.policies('ED-ORHC-FO-3')      = @() EDRHCPolicy(Transit="FO-3");
             obj.policies('Battery-Aware ED-RHC') = @() BatteryAwareRHCPolicy();
+            obj.policies('Energy-Aware ED-RHC') = @() EnergyAwareEDRHCPolicy();
             obj.policies('Collab-ED-RHC')     = @() CollabEDRHCPolicy();
             obj.policies('Simple Policy (example)') = @() SimplePolicy();
 
@@ -48,6 +49,7 @@ classdef ComponentRegistry < handle
             obj.agentTypes('Abstract Agent')   = @(idx, pos, sp) AbstractAgent(idx, pos, sp);
             obj.agentTypes('Physical Agent') = @(idx, pos, sp) PhysicalAgent(idx, pos, sp);
             obj.agentTypes('Simple Agent (example)') = @(idx, pos, sp) SimpleAgent(idx, pos, sp);
+            obj.agentTypes('DiffDrive Agent') = @(idx, pos, sp) DiffDriveAgent(idx, pos, sp);
 
             obj.targetTypes = containers.Map('KeyType','char','ValueType','any');
             obj.targetTypes('Uncertainty Target')     = @(idx, pos) Target(idx, pos);
@@ -57,6 +59,11 @@ classdef ComponentRegistry < handle
             obj.metrics('Average Uncertainty J(t)') = @() AverageUncertainty();
             obj.metrics('Simple Metric (example)')  = @() SimpleMetric();
             obj.metrics('Minimum SOC')              = @() MinimumSOC();
+            obj.metrics('Energy used')              = @() EnergyUsed();
+            obj.metrics('Charges')                  = @() Charges();
+            obj.metrics('Mean wait at stations')    = @() MeanWait();
+            obj.metrics('Monitoring share')         = @() MonitoringShare();
+            obj.metrics('Largest gap')              = @() LargestGap();
 
             % Agent types before the consolidation of 2026-10-20, kept so older scripts and
             % layouts run unchanged (e.g. William's Joint RHC studies use 'Linear Agent')

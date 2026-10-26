@@ -19,6 +19,7 @@ classdef guiTest < matlab.uitest.TestCase
             rng(0);
             tc.ui = MainUI('Monitor', MainUI.secondaryMonitor());
             tc.addTeardown(@() closeUI(tc.ui));
+            waitForLayout(tc.ui);
         end
     end
 
@@ -190,7 +191,10 @@ classdef guiTest < matlab.uitest.TestCase
             tc.press(tc.ui.ax, [20 50]);
             tc.type(tc.ui.stationPowerField, 250);
             tc.press(button(tc, 'Add Station'));
+            drawnow;   % let the mode switch land before the click (after a long test it can lag)
+            tc.assertEqual(tc.ui.controller.mode, "addStation", 'Add Station switches the mode');
             tc.press(tc.ui.ax, [70 50]);
+            drawnow;
             m = tc.ui.model;
             tc.verifyEqual(numel(m.targets), 2, 'station added by clicking');
             tc.verifyClass(m.targets(2), 'ChargingStation');
@@ -208,7 +212,7 @@ classdef guiTest < matlab.uitest.TestCase
             tc.verifyEqual(tc.ui.paperProfileDropdown.Value, 'Full');
             tc.choose(tc.ui.paperProfileDropdown, 'Energy paper');
             tc.verifyEqual(sort(string(tc.ui.policyDropdown.Items)), ...
-                sort(["ED-ORHC-SO", "ED-ORHC-FO-3", "Battery-Aware ED-RHC"]));
+                sort(["ED-RHC", "ED-ORHC-SO", "ED-ORHC-FO-3", "Battery-Aware ED-RHC", "Energy-Aware ED-RHC"]));
             tc.verifyEqual(string(tc.ui.profileDropdown.ItemsData), ["SO", "FO-3"]);
             tc.verifyEqual(tc.ui.model.activePolicy, tc.ui.policyDropdown.Value, 'model follows the shown policy');
             tc.verifyEqual(tc.ui.model.agentSpec.profile, string(tc.ui.profileDropdown.Value), ...
@@ -251,6 +255,21 @@ classdef guiTest < matlab.uitest.TestCase
             exportapp(tc.ui.objectiveWin.fig, fullfile(tc.outDir, [name '_objective.png']));
         end
     end
+end
+
+function waitForLayout(ui)
+% Clicks on the canvas land where its laid-out position says. A new window lays out its grid
+% asynchronously (slowly after a long test), and until then the axes keep a default 400 x 300
+% px size, so wait until their size has settled
+drawnow;
+last = [];
+t0 = tic;
+while toc(t0) < 10
+    p = getpixelposition(ui.ax, true);
+    if isequal(p, last) && p(3) > 400, break; end
+    last = p;
+    pause(0.1); drawnow;
+end
 end
 
 function closeUI(ui)

@@ -62,6 +62,8 @@ classdef EDRHCPolicy < Policy
         transit = "FO-0"             % "FO-0", "SO" or "FO-3" (see above)
         speedLimit = Inf             % speed limit of the SO / FO-3 profiles
         accelLimit = Inf             % |acceleration| limit of the SO / FO-3 profiles
+        avoidStations = false        % true: never go to or charge at a charging station (stations are
+                                     % left out of the neighborhood unless every neighbor is one)
         energyWeight = 7.68e-3       % weight of the energy objective int u^2 dt (alpha in eqs. 3
                                      % and 20 of the energy-aware paper): its 213.3e-6 for a
                                      % 600 x 600 space, times 36 for our 100 x 100 canvas;
@@ -115,6 +117,7 @@ classdef EDRHCPolicy < Policy
             % Called when the agent has no path and no dwell left: on arrival (or at t = 0), and
             % when an active or inactive time is over
             cmd = struct();
+            if obj.avoidStations, agent.chargeAllowed = false; end
             s = obj.stateOf(agent);
             if s.stage == "travel"
                 u = obj.solve(1, agent, model, adj, curIdx, simTime);
@@ -158,6 +161,10 @@ classdef EDRHCPolicy < Policy
             if nargin < 7, adj = model.buildAdjacency(); end
             nbrs = find(adj(i, :));
             avail = nbrs(~obj.coveredNeighbors(agent, model, adj, i));
+            if obj.avoidStations   % stations only when there is no other way on
+                st = arrayfun(@(k) isa(model.targets(k), 'ChargingStation'), nbrs);
+                if ~all(st), avail = avail(~ismember(avail, nbrs(st))); end
+            end
             hood = [i, avail];                    % the neighborhood without covered neighbors
             tg = model.targets(hood);
             R = [tg.R];
@@ -186,6 +193,9 @@ classdef EDRHCPolicy < Policy
                 end
                 d = struct('R', R, 'A', A, 'B', B, 'j', k, 'rho', rho0, 'w', weights, ...
                     'y', y, 'vb', obj.speedLimit, 'ub', obj.accelLimit);
+                rhoRange = obj.transitRange(agent, model, i, hood(k), pts, rhoRange);
+                if isempty(rhoRange), continue; end   % no affordable transit to this neighbor
+                if rhoRange(2) <= rhoRange(1), d.rho = rhoRange(1); end   % one transit time left
                 if obj.transit ~= "FO-0"   % the energy the agent draws, E(rho)
                     d.E = obj.energyOf(agent, model, i, hood(k), pts, y, rhoRange);
                 end
@@ -260,10 +270,29 @@ classdef EDRHCPolicy < Policy
         end
 
         function [a, b] = planConstraint(~, ~, ~, ~, ~, ~, ~)
-            % An extra constraint a * [u_i v_i u_j v_j rho]' <= b on every plan of an RHCP at i
-            % that visits neighbor j (args: agent, model, i, j, d, rhoRange). None by default
-            % (a = []); BatteryAwareRHCPolicy bounds the plan's energy
+            % Extra constraints a * [u_i v_i u_j v_j rho]' <= b (one row each) on every plan of
+            % an RHCP at i that visits neighbor j (args: agent, model, i, j, d, rhoRange). None by
+            % default (a = []); BatteryAwareRHCPolicy bounds the plan's energy
             a = []; b = [];
+        end
+
+        function rhoRange = transitRange(~, ~, ~, ~, ~, ~, rhoRange)
+            % The transit times [lo hi] searched for neighbor j (args: agent, model, i, j, pts,
+            % rhoRange); [] makes j unaffordable. Unchanged by default
+        end
+
+        function J = planObjective(obj, d, P)
+            % The cost of plans P (rows [ui vi uj vj], or [ui vi uj vj rho] when rho is a
+            % decision) that the RHCP minimizes: planCost plus the energy term energyWeight *
+            % E(rho), scaled like planCost. With the weights [1 1] of RHCP1 and RHCP2 planCost is
+            % J_sH; with the RHCP3 weights [alpha, 1 - alpha] it is J_sH / 2 at alpha = 0.5, so the
+            % energy term is halved there and alpha = 0.5 gives the paper's RHCP3 objective
+            % J_sH + energyWeight * E
+            if size(P, 2) < 5
+                J = obj.planCost(d, P);
+            else
+                J = obj.planCost(d, P) + sum(d.w) / 2 * obj.energyWeight * d.E(P(:, 5));
+            end
         end
 
         function cmd = depart(obj, agent, model, adj, curIdx, simTime)
@@ -309,7 +338,7 @@ classdef EDRHCPolicy < Policy
         end
     end
 
-    methods (Access = private)
+    methods (Access = protected)
         function s = stateOf(obj, agent)
             if isKey(obj.states, agent.index)
                 s = obj.states(agent.index);
@@ -413,8 +442,8 @@ classdef EDRHCPolicy < Policy
             end
             if nargin > 5 && ~isempty(ac)
                 for k = 1:numel(cs)
-                    cs(k).Aineq = [cs(k).Aineq; ac(1:4) * cs(k).M + [0 0 ac(5)]];
-                    cs(k).bineq = [cs(k).bineq; bc - ac(1:4) * cs(k).c'];
+                    cs(k).Aineq = [cs(k).Aineq; ac(:, 1:4) * cs(k).M + [zeros(size(ac, 1), 2), ac(:, 5)]];
+                    cs(k).bineq = [cs(k).bineq; bc(:) - ac(:, 1:4) * cs(k).c'];
                 end
             end
             % drop empty cases: x = y = 0 with the shortest transit is in every nonempty case
@@ -468,6 +497,11 @@ classdef EDRHCPolicy < Policy
             if isempty(Z), Z = lb; end
             costs = cost3(Z);
             [~, k] = min(costs);
+            if ~isfinite(costs(k))   % no plan of this case has a defined cost: infeasible
+                cost = Inf; x = Z(k, :) * M' + c0;
+                if fixed, rho = rhoRange(1); else, rho = Z(k, 3); end
+                return;
+            end
             [z, fz] = fmincon(@(z) cost3(z(:)'), Z(k, :)', Ain, bin, [], [], lb', ub', [], obj.options);
             if fz <= costs(k) && all(z(:)' >= lb - obj.tol) && all(Ain * z <= bin + obj.tol)
                 cost = fz; z = max(z(:)', lb);
@@ -478,15 +512,10 @@ classdef EDRHCPolicy < Policy
             if fixed, rho = rhoRange(1); else, rho = z(3); end
 
             function J = cost3(Z)
-                % planCost plus the energy term energyWeight * E(rho), scaled like planCost: with
-                % the weights [1 1] of RHCP1 and RHCP2 planCost is J_sH; with the RHCP3 weights
-                % [alpha, 1 - alpha] it is J_sH / 2 at alpha = 0.5, so the energy term is halved
-                % there and alpha = 0.5 gives the paper's RHCP3 objective J_sH + energyWeight * E
                 if fixed
-                    J = obj.planCost(d, Z * M' + c0);
+                    J = obj.planObjective(d, Z * M' + c0);
                 else
-                    r = Z(:, 3);
-                    J = obj.planCost(d, [Z * M' + c0, r]) + sum(d.w) / 2 * obj.energyWeight * d.E(r);
+                    J = obj.planObjective(d, [Z * M' + c0, Z(:, 3)]);
                 end
             end
         end
