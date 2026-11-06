@@ -20,9 +20,9 @@
 
 %% Settings
 % |QuickMode| shortens every run to 60 s and keeps two configurations and one map, to check the
-% pipeline in a few minutes. A full run took about 45 minutes on a 10-core computer with one
-% parallel worker per core (Parallel Computing Toolbox, used when available), and it takes
-% longer on one core.
+% pipeline in a few minutes. A full run (120 simulations) took about 3.5 hours on a 10-core
+% computer that also ran other jobs, with one parallel worker per core (Parallel Computing
+% Toolbox, used when available); it takes less on an idle computer and longer on one core.
 % Every run is deterministic, so serial and parallel runs give the same results.
 QuickMode = false;
 quick = getenv("COLLAB_RESULTS_QUICK");   % set by exportCollabResults(Quick=true)
@@ -54,8 +54,10 @@ showImages(fullfile(outDir, ["fig_class_avoided", "fig_class_visited", "fig_clas
 
 %% Simulations
 % Benchmark (8 configurations x 4 methods and 3 ablations), group study (2 configurations x 4
-% methods), team size (N = 2..6, 3 methods) and maps (5 maps x 4 methods, and Collab (B)
-% without the terminal correction). Each run is saved in |runs/<id>.mat|.
+% methods), team size (N = 2..6, 3 methods), maps (5 maps x 4 methods, and Collab (B) without
+% the terminal correction) and the group study with seeds 2-5 of the stream that draws the
+% candidate plans of a group (Collab (A) and (B); seed 1 is the default). Each run is saved in
+% |runs/<id>.mat|.
 runs = collabExperiments("list", Quick=QuickMode);
 fprintf('%d runs\n', height(runs));
 collabExperiments("run", Quick=QuickMode, ResultsDir=outDir);

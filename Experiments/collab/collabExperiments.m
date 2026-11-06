@@ -295,6 +295,7 @@ add("HistMax", max(hi), '%.1f'); add("HistMin", abs(min(hi)), '%.1f');
 ns = arrayfun(@(s) pc(J("bench", s, "Collab-A-noshare"), J("bench", s, "Collab-A")), ma);
 add("NoShareMaze", ns(3), '%.1f');
 add("NoShareOthersMax", ceil(max(abs(ns([1 2 4 5])))), '%d');
+add("BenchCoLocMax", max(T.CoLocation(T.Study == "bench")), '%.1f');
 % group study
 g = ["JS_2Agent_5T", "JS_3Agent_General"]; gk = ["TwoAFiveT", "General"];
 for k = 1:2
@@ -310,8 +311,8 @@ for k = 1:height(M)
     e = J("maps", M.Layout(k), "ED-RHC");
     add("MapsBvsED" + mk(k), abs(pc(J("maps", M.Layout(k), "Collab-B"), e)), '%.1f');
     add("MapsAvsED" + mk(k), abs(pc(J("maps", M.Layout(k), "Collab-A"), e)), '%.1f');
+    add("MapsBvsAlpha" + mk(k), abs(pc(J("maps", M.Layout(k), "Collab-B"), J("maps", M.Layout(k), "ED-RHC-alpha"))), '%.1f');
 end
-add("MapsBvsAlphaLab", abs(pc(J("maps", "ReportLayout", "Collab-B"), J("maps", "ReportLayout", "ED-RHC-alpha"))), '%.1f');
 pk = ["ED", "Alpha", "A", "B"]; mm = ["ED-RHC", "ED-RHC-alpha", "Collab-A", "Collab-B"];
 for q = 1:4, add("MapsPeakLab" + pk(q), row("maps", "ReportLayout", mm(q)).PeakR, '%.0f'); end
 add("MapsCoLocMax", max(T.CoLocation(T.Study == "maps")), '%.1f');
