@@ -6,9 +6,9 @@ function energyModelTest()
 %
 % 1. The defaults change nothing: c2 = 0 gives the earlier profiles bit for bit, and the
 %    quadrature of a profile matches its closed-form energy.
-% 2. SO without limits: Theorem 1's closed form, the profile's integrals and a QP solve agree.
-% 3. SO with a speed limit (Theorem 2), an acceleration limit, and both: profile against QP.
-% 4. FO-3: Theorem 3's root against a dense search over trapezoids, with and without limits.
+% 2. SO without limits: the closed form (the energy-aware paper's SO theorem), the profile's integrals and a QP solve agree.
+% 3. SO with a speed limit (its closed form), an acceleration limit, and both: profile against QP.
+% 4. FO-3: the root of the paper's FO-3 theorem against a dense search over trapezoids, with and without limits.
 % 5. Every profile starts and ends at rest, covers y, keeps both limits, has u = dv/dt and
 %    v = dl/dt, and (SO) a continuous u.
 % 6. An Abstract Agent with c2 > 0 and battery losses draws the energy predicted for its plan.
@@ -61,7 +61,7 @@ check(b.energyUsed == Eold, 'default battery drains exactly as before (c2 = 0, R
 % ---- 2-5. Profiles of the full power model ----
 for k = 1:numel(sets)
     c1 = sets(k).c1; c2 = sets(k).c2; nu = sqrt(c2 / c1);
-    % 2. SO without limits (Theorem 1)
+    % 2. SO without limits (closed form)
     e1 = 0; e2 = 0;
     for rho = [6 10 20 40]
         th = nu * rho / 2;
@@ -72,9 +72,9 @@ for k = 1:numel(sets)
         if haveQP, e2 = max(e2, abs(Lcf / qpMin(c1, c2, y, rho, Inf, Inf) - 1)); end
         sane(P, Inf, Inf, true, sprintf('%s: SO free, rho %g', sets(k).name, rho));
     end
-    check(e1 < 1e-9, sprintf('%s: SO free, Theorem 1 = profile integrals (largest error %.1e)', sets(k).name, e1));
-    if haveQP, check(e2 < 1e-4, sprintf('%s: SO free, Theorem 1 = QP (largest error %.1e)', sets(k).name, e2)); end
-    % 3. SO with limits: speed (Theorem 2), acceleration, both
+    check(e1 < 1e-9, sprintf('%s: SO free, closed form = profile integrals (largest error %.1e)', sets(k).name, e1));
+    if haveQP, check(e2 < 1e-4, sprintf('%s: SO free, closed form = QP (largest error %.1e)', sets(k).name, e2)); end
+    % 3. SO with limits: speed (closed form), acceleration, both
     cases = {1.3, Inf, [8 10 14], "hypV"; 1.6, Inf, [8 10 14], "hypV"; ...
              Inf, 0.6, [8.5 10 14], "hypA"; 1.0, 0.6, [12 14 20], "hypVA"};
     for c = 1:size(cases, 1)
@@ -91,10 +91,10 @@ for k = 1:numel(sets)
         end
         label = sprintf('%s: SO, speed limit %g, acceleration limit %g (%s)', sets(k).name, vb, ub, strjoin(unique(kinds), ", "));
         check(any(kinds == kind), label + ": regime " + kind + " reached");
-        if kind == "hypV", check(e1 < 1e-9, sprintf('%s: Theorem 2 = profile integrals (largest error %.1e)', label, e1)); end
+        if kind == "hypV", check(e1 < 1e-9, sprintf('%s: speed-limited closed form = profile integrals (largest error %.1e)', label, e1)); end
         if haveQP, check(e2 < 5e-4, sprintf('%s: profile = QP (largest error %.1e)', label, e2)); end
     end
-    % 4. FO-3 (Theorem 3), without and with limits
+    % 4. FO-3 (the root of its cubic), without and with limits
     e1 = 0; e2 = 0;
     for lim = [Inf Inf; 1.0 Inf; Inf 0.6; 1.0 0.6]'
         for rho = [10 14 20 40]
@@ -115,7 +115,7 @@ for k = 1:numel(sets)
         end
     end
     check(e1 < 1e-6, sprintf('%s: FO-3 loss = best trapezoid of a dense search, with and without limits (largest error %.1e)', sets(k).name, e1));
-    check(e2 < 1e-12, sprintf('%s: FO-3 acceleration time solves Theorem 3''s cubic', sets(k).name));
+    check(e2 < 1e-12, sprintf('%s: FO-3 acceleration time solves its cubic', sets(k).name));
 end
 
 % ---- 6. Drawn = predicted energy, with c2 > 0 and battery losses ----
@@ -264,7 +264,7 @@ end
 end
 
 function L = soSpeedClosedForm(c1, c2, y, rho, vb)
-% Theorem 2 of the energy-aware paper (speed limit active), as in its check script
+% The speed-limited SO of the energy-aware paper (speed limit active), as in its check script
 nu = sqrt(c2 / c1);
 x = fzero(@(x) (sinh(x) - x) ./ (cosh(x) - 1) - nu * (vb * rho - y) / (2 * vb), [1e-3, 40]);
 t1 = x / nu;

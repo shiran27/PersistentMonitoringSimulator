@@ -1,4 +1,4 @@
-# MultiAgentSimulator
+# PersistentMonitoringSimulator
 
 A MATLAB simulator for experimenting with multi-agent path planning, navigation policies, and agent behavior. Agents move between targets on a user-drawn graph, avoiding walls, while an objective function tracks how well the swarm covers the environment over time.
 
@@ -15,7 +15,7 @@ New to the simulator? `Examples/EventDetection/` sets up a new monitoring proble
 ## Examples
 
 ### Main UI
-The application on launch — Modular Components bar on top, Tools panel on the left, Time Control below, canvas on the right.
+The reference scenario (Stevens Smart Lab) under ED-RHC after 60 s: the **Tools** panel on the left (paper profile, scenario, editing tools, agent settings, path planner, active policy, targets and objective), **Time Control** below it, and the canvas on the right.
 
 ![Main UI overview](screenshots/overview.png)
 
@@ -25,7 +25,7 @@ Targets, edges, and walls drawn on the canvas before running the simulation.
 ![Scenario with targets, edges, and walls](screenshots/scenario.png)
 
 ### Simulation running
-Agents following their paths mid-simulation. The Modular Components dropdowns are locked while the sim is active.
+Agents following their paths mid-simulation. The component dropdowns of the Tools panel are locked while the simulation runs.
 
 ![Simulation in progress](screenshots/running.png)
 
@@ -36,7 +36,9 @@ The objective function `J(t)` tracked over the course of a run.
 
 ## Running the project
 
-1. Open MATLAB and set the working directory to the repo root (`MultiAgentSimulator`).
+1. Open MATLAB and set the working directory to the root of the cloned repository (`PersistentMonitoringSimulator`).
+
+   **Requirements:** MATLAB R2021a or later (tested with R2025a) and the Optimization Toolbox (the RHC policies use `fmincon`; `energyModelTest` uses `quadprog`). The Parallel Computing Toolbox is optional (the paper pipelines run their simulations in parallel when it is there).
 2. In the Command Window, run:
    ```matlab
    runMainUI
@@ -44,7 +46,7 @@ The objective function `J(t)` tracked over the course of a run.
    This adds all subfolders to the path and opens the UI. `runMainUI('Monitor', 2)` opens the windows on
    another monitor (a row of `get(groot, 'MonitorPositions')`), sized to fit it, and
    `runMainUI('PaperProfile', "Energy paper")` starts with a [paper profile](#paper-profiles).
-3. Pick a ready-made scenario from the **Scenario** dropdown (see [Scenarios](#scenarios)), or build your own. Use the dropdowns in the **Tools** panel to pick a Path Planner, Agent Policy, Agent Type, and Uncertainty mode. These can only be changed while the simulation is **not** running.
+3. Pick a ready-made scenario from the **Scenario** dropdown (see [Scenarios](#scenarios)), or build your own. Use the dropdowns in the **Tools** panel to pick the **Path Planner**, the **Active Policy**, the agent type (the dropdown next to **Add Agent**), and, under **Targets**, the target type and the uncertainty mode. These can only be changed while the simulation is **not** running.
 4. Use the **Tools** panel to add targets, agents, edges, and walls. **Agent Speed**, **Agent Accel** and **Speed Profile** set the next agents you place (see [Agent types](#agent-types)). Use the **Time Control** panel to play/pause the simulation.
 
 ## Scenarios
@@ -89,7 +91,7 @@ Each target's uncertainty follows `dR_i/dt = (A_i - B_i N_i) v_i`, where `N_i` i
 | Decay rate `B_i` (per agent) | 10 |
 | Initial uncertainty `R_i(0)` | 0 |
 
-The other modes are opt-in from the **Uncertainty** dropdown:
+The other modes are opt-in from the uncertainty-mode dropdown under **Targets**:
 - `Static Priority Target` — target 1 grows at `A = 5`, the rest at their `A_i`.
 - `Dynamic Uncertainty` — as above, plus periodic spikes: every target's rate jumps to `A_spike = 14` for 10 s every 250 s, staggered by 50 s from one target to the next. With `B = 10`, one agent cannot bring a spiking target down (`14 - 10 > 0`) but two can (`14 - 2*10 < 0`).
 
@@ -114,11 +116,15 @@ The experiment harness (`Experiments/runTrial`, `Experiments/trialDefaults.m`) s
 | `agentBatteryR0`, `agentBatteryVoc` | battery internal resistance [Ohm] and open-circuit voltage [V] of each agent (saved only when `R0 > 0`) |
 | `chargers`, `chargePower` | targets that are charging stations (`ChargingStation`), and their charging power [W] |
 | `chargerDocks` | number of docks of each station (saved only when limited) |
+| `chargerSwapTime` | battery swap time of each station [s] (saved only for swap stations) |
+| `agentKp`, `agentKd` | tracking gains of each Physical Agent (saved when a Physical Agent is in the layout) |
 | `background` | background image (a file in `Configurations/backgrounds/`, the project root, or a full path) |
+| `targetType` | the target type (a `ComponentRegistry` name); a file without it loads `Uncertainty Target` |
 | `uncertaintyMode` | one of the modes above |
+| `bounds`, `detectionRadius` | the canvas `[xMin xMax yMin yMax]` and the service tolerance (saved only when not the defaults) |
 | `A`, `B`, `R0` | per-target `A_i`, `B_i`, `R_i(0)` (`n x 1`, or one value for all) |
 
-Only `targets` and `edges` are required, so files saved by older versions still load: missing fields keep the defaults above (agents take the GUI's Agent Accel and Speed Profile) and no agents are placed. Loaded agents use the Agent Type selected in the dropdown. `runTrial` ignores stored agents and places its own from the `AgentStarts` parameter.
+Only `targets` is required, so files saved by older versions still load: missing fields keep the defaults above (agents take the GUI's Agent Accel and Speed Profile), and without `edges` or `agentStarts` no edges or agents are placed. Loaded agents use the agent type selected in the dropdown next to **Add Agent**, on their stored start targets. `runTrial` places its own agents from `AgentStarts` (`AgentSettings = "params"`, the default), or keeps the stored agents and their settings (`AgentSettings = "layout"`).
 
 `Configurations/ReportLayout.mat` is the reference scenario of the simulator paper (Stevens Smart Lab, background `LabFloor.png`: `LabLayout.png` recolored, without the diamond-shaped block in the middle): 11 targets, 10 edges, 92 walls (3 placed by hand plus 89 traced from the floor plan by `makeScenarioLayouts`, so routes stay on the open floor), and 5 agents at speed 15 starting on targets **1, 6, 2, 3, 5** (agent 1 on target 1, agent 2 on target 6, and so on), in `Static Uniform` mode with `A = 1`, `B = 10`, `R(0) = 0`.
 
@@ -130,13 +136,13 @@ matlab -batch "addpath(genpath(pwd)); smokeTest"
 ```
 `tests/smokeTest.m` checks the defaults and the layout file round trip, then runs every registered policy x path planner x agent type for 20 s on `ReportLayout.mat` and checks that each run finishes with a finite objective `J`. It also checks the agent types (older names, every speed profile, service only at rest, Physical Agents arriving when planned, smooth heading), that William's Joint RHC harness runs, every catalog scenario, and the battery model (predicted transit energy, Battery-Aware ED-RHC recharging in time while ED-RHC runs out). It prints one line per check and exits with an error if any check fails (about 20 s). New components registered in `ComponentRegistry` are picked up automatically.
 
-`tests/guiTest.m` drives the real GUI with MATLAB's App Testing Framework: it loads `ReportLayout.mat` over the lab background and runs to the end, plays, pauses and resets, saves, clears and reloads a layout, builds a small scenario by clicking, places a charging station, loads every ready-made scenario, filters the menus by paper profile, and checks that a GUI run and a headless `runTrial` give the same `J`. It needs a display; the windows open on a secondary monitor if there is one and close when it finishes (about 2 min):
+`tests/guiTest.m` drives the real GUI with MATLAB's App Testing Framework: it loads `ReportLayout.mat` over the lab background and runs to the end, plays, pauses and resets, saves, clears and reloads a layout, builds a small scenario by clicking, places a charging station, loads every ready-made scenario except the JS presets, filters the menus by paper profile, and checks that a GUI run and a headless `runTrial` give the same `J`. It needs a display; the windows open on a secondary monitor if there is one and close when it finishes (about 2 min):
 ```
 matlab -batch "addpath(genpath(pwd)); assertSuccess(runtests('guiTest'))"
 ```
 Screenshots of each stage are written to `results/gui/` (git-ignored).
 
-`tests/energyModelTest.m` checks the full power model and the stations: the defaults change nothing; the SO and FO-3 profiles match Theorems 1-3 and a QP solve (within 0.02%) in every regime; every profile is rest to rest, within its limits and smooth; an Abstract Agent draws the predicted energy with and without battery losses; the turn limit and Lemma 1; the new settings in `AgentSpec`, layouts and `runTrial`; docks and slots; the energy-optimal transit (Proposition 2); route tables equal to shortest paths; home stations; and the energy layouts:
+`tests/energyModelTest.m` checks the full power model and the stations: the defaults change nothing; the SO and FO-3 profiles match their closed forms (the SO and FO-3 theorems of the energy-aware paper and the speed-limited SO) and a QP solve (within 0.05%) in every regime; every profile is rest to rest, within its limits and smooth; an Abstract Agent draws the predicted energy with and without battery losses; the turn limit and Lemma 1; the new settings in `AgentSpec`, layouts and `runTrial`; docks and slots; the energy-optimal transit (Proposition 2); route tables equal to shortest paths; home stations; and the energy layouts:
 ```
 matlab -batch "addpath(genpath(pwd)); energyModelTest"
 ```
@@ -162,7 +168,7 @@ There are three agent types (`Components/AgentTypes/`): the **Abstract Agent**, 
 - `"SO"`: minimum energy.
 - `"FO-3"`: minimum-energy trapezoid.
 
-The older names `"constant"` (and `"constant speed"`) and `"FO"` still work: they are FO-0 and FO-3. Without a planned transit time an Abstract Agent crosses an edge of length `y` in `y/maxSpeed` (`"FO-0"`) or `1.5 y/maxSpeed` (`"SO"`, `"FO-3"`, peak speed `maxSpeed`). On curved paths its profile depends on the path length only; the heading follows the path and turns at `omega = kappa * v` (`state.omega`), as in Theorem 2 of the energy-aware paper.
+The older names `"constant"` (and `"constant speed"`) and `"FO"` still work: they are FO-0 and FO-3. Without a planned transit time an Abstract Agent crosses an edge of length `y` in `y/maxSpeed` (`"FO-0"`) or `1.5 y/maxSpeed` (`"SO"`, `"FO-3"`, peak speed `maxSpeed`). On curved paths its profile depends on the path length only; the heading follows the path and turns at `omega = kappa * v` (`state.omega`), as in the energy-aware paper.
 
 A Physical Agent follows the planned profile when that profile keeps within its reference limits on the path (`"SO"` and `"FO-3"` usually do on straight edges). Otherwise, it follows its fastest profile within those limits (full acceleration and braking, slower through corners, where the turn takes acceleration too), slowed down uniformly to the planned time. With `"SO"` or `"FO-3"` it takes whichever of the two draws less `int |a|^2 dt` on the path: those shapes minimize energy on a straight line, but on a curvy path their higher mid-edge speed can cost more in the turns. `"FO-0"` never fits, since it jumps to its speed, so with `"FO-0"` a Physical Agent moves at its own fastest pace, `shortestTransit(path)`. Its feedforward is the reference's own change of velocity over each step, so an agent on the reference stays on it.
 
@@ -174,7 +180,7 @@ A Physical Agent follows the planned profile when that profile keeps within its 
 - `batteryWh`.
 
 Unset settings keep the type's defaults. One spec serves every place that creates agents:
-- **In the GUI:** **Agent Type**, **Agent Speed**, **Agent Accel** and **Speed Profile** form `ScenarioModel.agentSpec`, applied to the next agents placed.
+- **In the GUI:** the agent type (the dropdown next to **Add Agent**), **Agent Speed**, **Agent Accel** and **Speed Profile** form `ScenarioModel.agentSpec`, applied to the next agents placed.
 - **Layouts:** a layout stores each agent's speed, acceleration and profile. The type is always the current selection.
 - **In `runTrial`:**
   - `AgentType` and `AgentSpeed` set the type and speed.
@@ -195,14 +201,14 @@ New agent types are subclasses for different platforms (dynamics, limits, sensin
 
 The energy-aware paper (Batch 1 of its simulator specification) uses the DC-motor power model `P = P_m + c1 u^2 + c2 v^2 + c3 v` (Tokekar, Karnad and Isler), with `P_m = P_I` (idle) or `P_M` (moving). The battery's model above is the case `c1 = gammaAcc/eta`, `c3 = alphaVel/eta` and `c2 = 0`. Setting `agent.battery.c2 > 0` (or `AgentSpec(MotorC2=...)`, `'Agent_motorC2'`, layout `agentMotorC2`) switches every agent to the full model. The defaults (`c2 = 0`, no turn limit, no battery losses) reproduce every earlier result bit for bit.
 - **Least-loss profiles** (`SpeedProfile.shape(..., nu)` with `nu = sqrt(c2/c1)`). The agent minimizes the motion loss `L = int (c1 u^2 + c2 v^2) dt`.
-  - SO without active limits is hyperbolic: `v(t) = A (cosh th - cosh(nu (t - rho/2)))` with `th = nu rho/2`, and `L = c1 nu^3 y^2 / (2 (th - tanh th))` (Theorem 1). As `c2 -> 0` it tends to the cubic.
-  - Under a speed limit, hyperbolic arcs reach the limit with `u -> 0`, then the agent cruises (Theorem 2). Under an acceleration limit, `u` stays at the limit at both ends around a hyperbolic middle arc. With both limits, the two combine. Each case keeps `u` continuous.
-  - FO-3 accelerates for the root `tau*` in `(0, rho/3]` of `c2 tau^2 (2 tau - rho) = 3 c1 (3 tau - rho)`, clamped to what the limits allow (Theorem 3).
+  - SO without active limits is hyperbolic: `v(t) = A (cosh th - cosh(nu (t - rho/2)))` with `th = nu rho/2`, and `L = c1 nu^3 y^2 / (2 (th - tanh th))` (the energy-aware paper's SO theorem). As `c2 -> 0` it tends to the cubic.
+  - Under a speed limit, hyperbolic arcs reach the limit with `u -> 0`, then the agent cruises. Under an acceleration limit, `u` stays at the limit at both ends around a hyperbolic middle arc. With both limits, the two combine. Each case keeps `u` continuous.
+  - FO-3 accelerates for the root `tau*` in `(0, rho/3]` of `c2 tau^2 (2 tau - rho) = 3 c1 (3 tau - rho)`, clamped to what the limits allow (the energy-aware paper's FO-3 theorem).
   - `SpeedProfile.loss(name, y, rho, vb, ub, c1, c2)` gives `L` (vectorized in `rho`), and `SpeedProfile.integrals(P)` gives `int u^2` and `int v^2` of any profile.
 - **Turn limit** (Assumption A1). `agent.maxNormalAccel` (`a_n`, `Inf` by default) caps a path's speed at `min(maxSpeed, sqrt(a_n / kappa))`, with `kappa` the path's largest curvature (`agent.segmentSpeedLimit(pts)`). `agent.limitTransit(pts)` is the shortest transit within the agent's limits, `y/v + v/u` (Lemma 1).
 - **Energy of a plan.** `[E, Eex] = agent.transitPlanEnergy(pts, rho, name)` gives the battery energy `E = P_M rho + c3 y + L` of the least-loss profile within the agent's limits (`agent.planProfile`), and its excess `Eex = E - P_I rho` over idling, the only part a plan can change. `Battery.planEnergy(P)`, `idleEnergy` and `excessEnergy` work on any profile.
 - **Battery losses.** With `battery.R0 > 0`, the battery delivers `P + beta P^2` with `beta = R0/Voc^2` (first order in the internal resistance). Both `drain` and the plan energies include it, the latter by quadrature along the profile.
-- **Abstract Agents** follow these profiles exactly, so they draw what is predicted (to 0.001% in `energyModelTest`). Physical Agents are unchanged; the DiffDrive Agent draws through its motors and battery circuit ([below](#differential-drive-agent-energy-aware-paper)).
+- **Abstract Agents** follow these profiles exactly, so they draw what is predicted (to 0.02% in `energyModelTest`). Physical Agents are unchanged; the DiffDrive Agent draws through its motors and battery circuit ([below](#differential-drive-agent-energy-aware-paper)).
 - ED-ORHC-SO and ED-ORHC-FO-3 keep the CDC 2021 objective `int u^2`, as validated against the JS simulator.
 - **Stations with docks** (Sec. 6.2). `ChargingStation.docks` (`m_sigma`, `Inf` by default: every agent at rest charges) limits the agents charging at once; an agent at rest takes a free dock first come, first served and holds it until it leaves. `station.slotLength(agent, socMin)` is the slot `t_s = (Q - E_min)/(P_c - P_I)`, a full charge from the reserve. `model.addStation(pos, power, docks)`; layout field `chargerDocks`.
 - **Route tables** (Sec. 6.1, Lemma 2). `R = RouteTable(model, agent)` gives, for every node and station, the least excess route energy `R.D`, the route time `R.T` and the next node `R.next` (`R.route(k, station)` lists the nodes). An edge weighs its least excess energy `min E^ex(rho)` over `rho >= limitTransit`, at the energy-optimal transit time `R.edgeTime` (Proposition 2). The tables come from a synchronous distributed Bellman-Ford, whose cost is in `R.rounds` and `R.messages`.
@@ -319,7 +325,6 @@ On **Office floor with charging dock** (1500 s, seed 1, the layout's growth rate
 | ED-RHC, unlimited batteries | Abstract | 137.6 | 100% | 0 | none |
 | Battery-Aware ED-RHC | Abstract | 255.2 | 9.9% | 19 (dock busy 32% of the time) | none |
 | ED-RHC | Abstract | 8786 | 0 | 0 | all three, at about 225 s |
-| Battery Efficient (retired; measured at ac496ba) | Abstract | 10233 | 0 | 0 | two, at about 243 s |
 | Random Walk | Abstract | 9093 | 0 | 0 | all three, at 214-230 s |
 | ED-RHC, unlimited batteries | Physical | 238.0 | 100% | 0 | none |
 | Battery-Aware ED-RHC | Physical | 616.0 | 15.5% | 32 (dock busy 54% of the time) | none |
@@ -332,7 +337,7 @@ A slower station does not empty the batteries, since the reserve covers the wors
 `Energy-Aware ED-RHC` (`Components/AgentPolicy/EnergyAwareEDRHCPolicy.m`, a subclass of `EDRHCPolicy`) is the method of the energy-aware paper: ED-RHC with the [full power model](#full-power-model-energy-aware-paper), terminal values, and booked charging slots. It keeps ED-RHC's events and ordering cases. Batches 3a and 3b of the paper's simulator specification.
 - **Objective.** For a plan of length `w` with transit time `rho`, `N = J + omega E^ex(rho) + dhhat`: the neighborhood's uncertainty integral, the transit's excess energy over idling (`Agent.transitPlanEnergy`, with battery losses), and the terminal correction.
   - `terminal = "alpha"` (default) uses ED-RHC-alpha's weights in `J`; `"hhat"` adds the targets' relative values `hhat_k(X(t_f)) - hhat_k(X(t))` instead (`CollabTargetCost.terminal`, as in Collab-ED-RHC); `"none"` drops both.
-  - All three keep the energy value `hhat_E`, which adds `mu_a (E^ex + D_j - D_i)/(P_c - P_I + Pbar_a)`: energy is priced by the charging time it costs (Proposition 3), with `mu_a >= 0` the targets' marginal cost of delay and `Pbar_a` the agent's mean power since its last charge (`priceForm = "renewal"`, the renewal model's slope; `"charging"` drops `Pbar_a`). With `priceShare = true` (default), `mu_a = sum_k pi_ak d hhat_k/d delta_k`, where `pi_ak` is the agent's share of the recent visits to target `k` (an exponential moving average kept by the target, weight `priceShareRate = 0.2` per visit, starting at `1/n`; `visitShares()` returns it): an absence of the agent delays only the visits it would have made. `priceScale` scales the price, and `priceAveraging = true` uses the running mean of `mu_a` over the agent's events. `energyTerm = "plan"` (default) prices the energy left at the plan's end, `mu_a E^ex/(P_c - P_I + Pbar_a)`; `"arrival"` also prices the route to the station, `D_j - D_i`, which double counts it (each of the route's transits is priced again when it is planned). `needSoc` moves the predicted need to the time the energy falls to `needSoc Q` (default: the reserve), so agents book earlier and arrive with more energy.
+  - All three keep the energy value `hhat_E`, which adds `mu_a E^ex/(P_c - P_I + Pbar_a)` (with `energyTerm = "arrival"`, `mu_a (E^ex + D_j - D_i)/(P_c - P_I + Pbar_a)`): energy is priced by the charging time it costs (Proposition 3), with `mu_a >= 0` the targets' marginal cost of delay and `Pbar_a` the agent's mean power since its last charge (`priceForm = "renewal"`, the renewal model's slope; `"charging"` drops `Pbar_a`). With `priceShare = true` (default), `mu_a = sum_k pi_ak d hhat_k/d delta_k`, where `pi_ak` is the agent's share of the recent visits to target `k` (an exponential moving average kept by the policy for each target, weight `priceShareRate = 0.2` per visit, starting at `1/n`; the policy's `visitShares()` returns it): an absence of the agent delays only the visits it would have made. `priceScale` scales the price, and `priceAveraging = true` uses the running mean of `mu_a` over the agent's events. `energyTerm = "plan"` (default) prices the energy left at the plan's end, `mu_a E^ex/(P_c - P_I + Pbar_a)`; `"arrival"` also prices the route to the station, `D_j - D_i`, which double counts it (each of the route's transits is priced again when it is planned). `needSoc` moves the predicted need to the time the energy falls to `needSoc Q` (default: the reserve), so agents book earlier and arrive with more energy.
   - `objectiveForm = "dinkelbach"` (default) minimizes `N - lambda w` with Dinkelbach's iteration on `lambda`; `"ratio"` minimizes `N/w` directly (the same plans; a solver check); `"alphaH"` minimizes `(J + dhhat_targets)/w + alphaH E^ex`. `omega = 0` by default.
   - Without stations, with `terminal = "none"`, `omega = 0` and the ratio form, it makes ED-RHC's decisions (alpha 0.5).
 - **Bookings.** Every agent holds a booking: its home station (`RouteTable.homeStations`), a dock, and a slot start `t_a` on the station's grid `k t_s`. A plan to `j` must keep `t_f + T(j, sigma) + delta <= t_a` (a row on the plan length) and `E^ex(rho) + D(j, sigma) + P_I (t_a - t) <= E - E_min` (an interval of `rho`, from `E^ex` tabulated per edge), with `D` and `T` from the route tables and `P_I` with the battery's losses. With a mission end `T`, `t_f <= T`.
@@ -340,7 +345,7 @@ A slower station does not empty the batteries, since the reserve covers the wors
 - **Station scheduler (`"R"`).** After each commit, and after a session, the agent reports its window `[e_a, l_a]`, its need `g_a` and `mu_a` to its station; messages take `messageDelay` (`delta`). On each report the station assigns its movable agents (monitoring, booked there in a future slot, nothing pending) to dock-slots within their windows that minimize `sum_a mu_a (|g - g_a| + switchSeconds [moved])` (`matchpairs`) and proposes the moves as one group. An agent accepts at its next event if the proposed slot lies in its current window; until every reply is in, both slots are held and the agent's plans keep both feasible. A decline, a lapsed lease (`leaseTime`, default the longest plan length plus `2 delta`) or a departure cancels the group, and a D2 request may take a held slot, which also cancels it. With `otherStations = true` (default) the D2 request also asks the other stations, which admit a visitor only if Lemma 4's condition still holds; the home booking is released after the grant.
 - **Charging.** When it has uncovered neighbors but none is affordable, the agent leaves now if it can reach an earlier free slot (and moves its booking there), and otherwise keeps servicing its target until its latest departure. Then, or at its latest departure, it takes the least-energy route to its station without covering targets, waits there without charging until its slot (`Agent.chargeAllowed`), charges until full or the end of its slot, and books its next slot. With `earlyStart = true` (default) the docks are work-conserving: a booked agent at its station starts as soon as its dock is idle and no other booking on it comes first, and holds the dock through its slot. With `pullForward = true` (default) a station offers time freed on a dock (a session that ended full before its slot's end, or a released booking of the current slot) to the first booked agent in line (one that asked for an earlier slot, then the earliest booking) that is at most `1 - pullMinCharge` full (default half), can reach the dock in that time and can use it until its slot; the agent accepts at its next event, claims the dock and comes now. Once its energy covers its mean power until `T`, it releases its booking.
 - **Charging methods** (Sec. 6.11). `ChargingStation.swapTime > 0` makes a battery-swap station: a session lasts the swap time and leaves the battery full, and the slot is the swap time. With a `Battery1RC` (CC-CV), a session ends when the charger reports the battery full or at its slot's end. With `tailSlot = true`, the agent leaves when its net charging rate falls to its cycle's mean net gain (the marginal value theorem), and at its slot's end it may stay for the next slot on its dock if that is free and still worth it; such a tail yields to the agent booked next on the dock that waits to start early, so Lemma 4 keeps the plain slot.
-- **Docks and stations.** With `fillIn = true` (default), an agent waiting at its station charges on any idle dock until the next slot booked there (or until full, at least `minFill` = 10 s), then books again nearest its new predicted need. With `stationExit = true` (default), an agent at a station whose neighbors are all covered heads for the nearest uncovered target, passing through covered ones, instead of waiting there (on the 1-dock office this cut `J` by about 20%: agents no longer sat at the station while the lobby was covered). Strategy `"R"` with `reportDeadband = 1` re-reports only when the predicted need has moved by more than one slot (or the booking left the window); without it the station chased each agent's need and bookings oscillated.
+- **Docks and stations.** With `fillIn = true` (default), an agent waiting at its station charges on any idle dock until the next slot booked there (or until full, at least `minFill` = 10 s), then books again nearest its new predicted need. Such a fill-in session holds no slot: a later booking may take its dock, and it then ends two steps before that booking starts. With `stationExit = true` (default), an agent at a station whose neighbors are all covered heads for the nearest uncovered target, passing through covered ones, instead of waiting there (on the 1-dock office this cut `J` by about 20%: agents no longer sat at the station while the lobby was covered). With `d2FillIn = true` (default), an agent that would wait at a drained target for its slot goes now when a dock will be idle on its arrival for at least `t_s/4`. Two rules keep Lemma 5 of the energy-aware paper (a slot in the window after every session): with `holdSlot = "window"` (default), a session that ends full before its slot's end stays docked unless a free slot lies in the agent's window (`"slot"` always stays, `"off"` leaves when full); with `exitCheck = true` (default), a station exit keeps both booking rows. Strategy `"R"` with `reportDeadband = 1` re-reports only when the predicted need has moved by more than one slot (or the booking left the window); without it the station chased each agent's need and bookings oscillated.
 - **Margins of physical agents.** `marginTime` and `marginEnergy` widen the booking rows once; `transitMargins = [s, J]` per transit, like the simulation step's, count `(1 + route hops)` times.
 - **Records.** `charges`, `sessions` (agent, station, dock, slot start and end, arrival, start, stop, energy before and after), `modeTime` (seconds monitoring, on the way, waiting and charging per agent: the monitoring share), `windowMisses` (bookings outside the window, none expected), and `stats` (RHCPs solved, how often the energy or a time row binds at the optimum, "no affordable neighbor" events, planned transits `[rho, rho_min]`, and why an RHCP3 found no next target; `messages` and `relays`, the end-to-end messages and their route-table hops, with `bookingChanges`, `reports`, `proposals`, `commits` and `cancels`). `traceEvents = true` records every decision in `trace`. `stats` also counts fill-ins (`fillIns`), station exits (`exits`) and dwells to the latest departure (`d2Dwells`, planned seconds `d2Time`).
 - **Setups.** Run it on the `"Energy: ..."` scenarios with `runTrial(..., 'AgentSettings', "layout", 'TargetRates', "layout")`, so the layout's robots and rates are used as in the GUI.
@@ -368,7 +373,7 @@ Every setup is a layout file the GUI lists in its Scenario dropdown: the JS pres
 
 ## Headless experiments
 
-`Experiments/runTrial(params)` runs one simulation without the GUI. Unset parameters take the values in `Experiments/trialDefaults.m`; component parameters take any `ComponentRegistry` name:
+`Experiments/runTrial(params)` runs one simulation without the GUI. Unset parameters take the values in `Experiments/trialDefaults.m`, which are William's Joint RHC study (two agents under Joint RHC, Abstract Agents at speed 15, `Dynamic Uncertainty` with `B = 20`); the papers' settings are in `Experiments/paper/paperDefaults.m`, `Experiments/collab/` and `Experiments/energy/`. Component parameters take any `ComponentRegistry` name:
 
 ```matlab
 out = runTrial(struct('Layout', "ReportLayout.mat", 'AgentStarts', "layout", ...
@@ -411,7 +416,7 @@ Every edge's path is planned once, when the edge is added (and again when walls 
 | Energy Efficient | As Dijkstra Corners, with a penalty on heading changes and corners pushed further out (`cornerBuffer` = 2.5) |
 | Grid A* | A* on an 8-connected occupancy grid (cell 0.5; cells closer than `clearance` = 1.2 to a wall are blocked), octile heuristic, then line-of-sight shortcuts; the standard grid-based baseline |
 
-Every planner then rounds the corners of its route (`PathSmoother.fillet`): each corner becomes a circular arc tangent to both segments, as large as the segments allow (radius at most `filletRadius` = 10), shrunk until it keeps `filletClearance` (0.6; 1.0 for Energy Efficient) from every wall. The heading is continuous and the curvature bounded, so Physical Agents keep their speed through turns: with the full acceleration limit, their transits on the maps take 14–19% less time than with the earlier pchip-smoothed paths and the 80% margin. When no wall-free route exists, a planner returns the straight line and sets `noRoute`; the GUI says so when the edge is added.
+Every planner then rounds the corners of its route (`PathSmoother.fillet`): each corner becomes a circular arc tangent to both segments, as large as the segments allow (radius at most `filletRadius` = 10; 15 for Energy Efficient), shrunk until it keeps `filletClearance` (0.6; 1.0 for Energy Efficient) from every wall. The heading is continuous and the curvature bounded, so Physical Agents keep their speed through turns: with the full acceleration limit, their transits on the maps took 14–19% less time than with the earlier pchip-smoothed paths and the 80% margin (measured when the arcs replaced them, commit f6a5048). When no wall-free route exists, a planner returns the straight line and sets `noRoute`; the GUI says so when the edge is added.
 
 **Walls during motion.** Paths avoid the walls, but an agent can still leave its path (for example, a user-defined agent). After every step the model checks whether an agent's motion crossed a wall; if it did, the agent stops just before the wall and the collision is counted (`ScenarioModel.collisions`, `runTrial` output `collisions`).
 
@@ -426,7 +431,7 @@ Every planner then rounds the corners of its route (`PathSmoother.fillet`): each
 | `SimplePolicy` | `Policy` | Goes to the free neighbor with the most events in progress (else the one visited longest ago) |
 | `SimpleMetric` | `Metric` | Share of the events that ended before an agent detected them |
 
-Each is one line in `ComponentRegistry`, so it appears in the GUI's dropdowns (Target Type, Agent Type, Active Policy, Objective) and in `runTrial` (`TargetType`, `AgentType`, `Policy`, `Metrics`). `eventDetectionExample.m` walks through the whole process in seven sections, each doing what the named GUI clicks do: import the floor plan, draw the walls, mark the targets, add the edges (the planner routes them around the walls), choose the new classes and place the robots, run, and compare policies headless with `runTrial`. It saves what the canvas shows after each step to `results/example/`. On the museum, SimplePolicy misses about 13% of the events and Random Walk about 44% (10 runs of 600 s).
+Each is one line in `ComponentRegistry`, so it appears in the GUI's dropdowns (**Targets**, the agent type next to **Add Agent**, **Active Policy**, **Objective**) and in `runTrial` (`TargetType`, `AgentType`, `Policy`, `Metrics`). `eventDetectionExample.m` walks through the whole process in seven sections, each doing what the named GUI clicks do: import the floor plan, draw the walls, mark the targets, add the edges (the planner routes them around the walls), choose the new classes and place the robots, run, and compare policies headless with `runTrial`. It saves what the canvas shows after each step to `results/example/`. On the museum, SimplePolicy misses about 13% of the events and Random Walk about 44% (10 runs of 600 s).
 
 ## Adding a new modular class
 
@@ -516,7 +521,7 @@ Helpers for path-following agents:
 - `beginLeg()` gives the arc-length parametrized path and the speed profile of the transit starting now.
 - `pointAt` and `headingAt` give position, tangent, heading and curvature along it.
 
-Override `resetToInitial` (calling `resetToInitial@Agent(obj)` first) to reset extra state, or `label` to change the text drawn on the agent. `AbstractAgent` is the simplest complete example; `PhysicalAgent` adds feedback control with saturation. Agents of different types can be mixed in one scenario.
+Override `resetToInitial` (calling `resetToInitial@Agent(obj)` first) to reset extra state, or `label` to change the text drawn on the agent. `AbstractAgent` is the simplest complete example; `PhysicalAgent` adds feedback control with saturation. Agents of different types can be mixed in one scenario (in the GUI, switch the type before placing each agent, or in code); a saved layout stores no agent type, so a mixed team is reloaded with the type selected at load time.
 
 Register it:
 ```matlab

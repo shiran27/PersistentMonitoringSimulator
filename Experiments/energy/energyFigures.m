@@ -3,7 +3,7 @@ function energyFigures(outDir)
 % 300-dpi PNGs) to outDir (default: results/energy/):
 %   fig_profiles.pdf  S1: (a) SO speed profiles with c2 = 0 and with c2 > 0 at three transit
 %       times, (b) the motion loss against the transit time for the least-loss SO profile
-%       (Theorem 1), the c2 = 0 optimum under the full model, and FO-3 (Theorem 3), (c) FO-3's
+%       (the paper's SO theorem), the c2 = 0 optimum under the full model, and FO-3, (c) FO-3's
 %       acceleration time tau*/rho; the energy robots' coefficients (c1, c2) = (17.75, 1.16)
 %   fig_setups.pdf    the energy setups (Configurations/Energy) as the GUI draws them, with their
 %       stations and docks and the agents' start targets
@@ -41,9 +41,9 @@ r = linspace(8, 60, 120);
 Lso = SpeedProfile.loss("SO", y, r, Inf, Inf, c1, c2);
 Lcub = arrayfun(@(q) fullLoss(SpeedProfile.shape("SO", y, q), c1, c2), r);
 Lfo3 = SpeedProfile.loss("FO-3", y, r, Inf, Inf, c1, c2);
-plot(r, Lso, 'LineWidth', 1.1, 'Color', cols(1, :), 'DisplayName', 'SO (Thm. 1)');
+plot(r, Lso, 'LineWidth', 1.1, 'Color', cols(1, :), 'DisplayName', 'SO, least loss');
 plot(r, Lcub, '--', 'LineWidth', 1.1, 'Color', cols(2, :), 'DisplayName', '$c_2 = 0$ optimum');
-plot(r, Lfo3, 'LineWidth', 1.1, 'Color', cols(3, :), 'DisplayName', 'FO-3 (Thm. 3)');
+plot(r, Lfo3, 'LineWidth', 1.1, 'Color', cols(3, :), 'DisplayName', 'FO-3');
 set(gca, 'YScale', 'log');
 xlabel({'Transit time: $\rho$ [s]', '(b) Motion loss'}, 'Interpreter', 'latex');
 ylabel('Motion loss: $L$ [J]', 'Interpreter', 'latex');

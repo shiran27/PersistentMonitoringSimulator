@@ -240,7 +240,7 @@ classdef PhysicalAgent < Agent
             seg = vecnorm(diff(pts, 1, 1), 2, 2);
             keep = [true; seg > 1e-9];                              % drop repeated points
             pts = pts(keep, :);
-            if size(pts, 1) < 2, pts = [pts; pts + [eps 0]]; end   % already there
+            if size(pts, 1) < 2, pts = [pts; pts + [1e-6 0]]; end  % already there (eps would vanish at |p| > 1)
             seg = vecnorm(diff(pts, 1, 1), 2, 2);
             n = size(pts, 1);
             G.pts = pts;

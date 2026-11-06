@@ -237,6 +237,7 @@ classdef guiTest < matlab.uitest.TestCase
 
         function addsTargetsOverBackgroundImage(tc)
             tc.ui.renderer.loadBackgroundImage(fullfile(tc.root, 'LabLayout.png'));
+            waitForLayout(tc.ui);   % the image may lay the canvas out again
             tc.press(button(tc, 'Add Target'));
             tc.press(tc.ui.ax, [30 30]);
             tc.verifyEqual(numel(tc.ui.model.targets), 1, 'target added by clicking on the background image');
@@ -260,11 +261,11 @@ end
 function waitForLayout(ui)
 % Clicks on the canvas land where its laid-out position says. A new window lays out its grid
 % asynchronously (slowly after a long test), and until then the axes keep a default 400 x 300
-% px size, so wait until their size has settled
+% px size, so wait until their size has settled (up to 30 s on a busy computer)
 drawnow;
 last = [];
 t0 = tic;
-while toc(t0) < 10
+while toc(t0) < 30
     p = getpixelposition(ui.ax, true);
     if isequal(p, last) && p(3) > 400, break; end
     last = p;

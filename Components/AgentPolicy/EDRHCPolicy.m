@@ -72,6 +72,9 @@ classdef EDRHCPolicy < Policy
                              % until R_i = 0 (no RHCP1), and the RHCPs only plan visits to j
                              % that clear it (the JS simulator's energy-aware methods)
         H = 250              % upper bound on the planning horizon w [s]
+        capHorizon = false   % true: H = min(H, T - t) near the mission end T (as the Automatica paper
+                             % and the JS simulator do); false: H up to the end
+        missionEnd = Inf     % mission end T [s] (runTrial sets it)
         recheckTime = 0      % wait before RHCP3 is tried again when every neighbor is covered
                              % (0 = every step, as in the JS simulator)
         gridSize = 15        % grid points per decision variable before the fmincon refinement
@@ -83,6 +86,7 @@ classdef EDRHCPolicy < Policy
         states               % agent index -> struct(stage, target, covered, hold)
         options              % fmincon options
         energyModels         % cache: edge, agent and plan -> E(rho) (see energyOf)
+        planTime = 0         % time of the RHCP being solved (the horizon cap)
     end
 
     properties (Constant)
@@ -141,6 +145,12 @@ classdef EDRHCPolicy < Policy
             if ~isKey(obj.states, agent.index) || agent.dwellRemaining <= 0, return; end
             s = obj.states(agent.index);
             if s.stage == "travel" || s.hold, return; end
+            if s.stage == "active" && model.targets(s.target).R <= obj.tol && agent.dwellRemaining > 1
+                % R_i reached 0 well before the planned active time (another agent at i, or a
+                % lower A_i after a spike): the event "R_i = 0" now, so RHCP2 is solved next
+                agent.dwellRemaining = 0;
+                return;
+            end
             adj = model.buildAdjacency();
             covered = obj.coveredNeighbors(agent, model, adj, s.target);
             if isequal(covered, s.covered), return; end
@@ -153,11 +163,18 @@ classdef EDRHCPolicy < Policy
             obj.states(agent.index) = s;
         end
 
+        function h = horizon(obj)
+            % The planning horizon bound: H, or with capHorizon the time left to the mission end
+            h = obj.H;
+            if obj.capHorizon && isfinite(obj.missionEnd), h = max(min(h, obj.missionEnd - obj.planTime), 1e-3); end
+        end
+
         function best = rhcp(obj, kind, agent, model, i, simTime, adj)
             % Solves RHCP<kind> (1, 2 or 3) for the agent at target i and returns the best plan:
             % best.j (next target; [] if every neighbor is covered), best.x = [u_i v_i u_j v_j],
             % best.rho (transit time to j), best.cost, and best.uBi (active time that drives
             % R_i to 0)
+            obj.planTime = simTime;
             if nargin < 7, adj = model.buildAdjacency(); end
             nbrs = find(adj(i, :));
             avail = nbrs(~obj.coveredNeighbors(agent, model, adj, i));
@@ -185,11 +202,11 @@ classdef EDRHCPolicy < Policy
                 rhoAgent = agent.shortestTransit(pts);   % what the agent can keep (0: any)
                 if obj.transit == "FO-0"
                     rho0 = max(rho0, rhoAgent);
-                    if rho0 > obj.H, continue; end
+                    if rho0 > obj.horizon(), continue; end
                     rhoRange = [rho0 rho0];
                 else
                     rhoRange = [max([obj.minTransit * rho0, ...
-                        SpeedProfile.minTransit(y, obj.speedLimit, obj.accelLimit), rhoAgent]), obj.H];
+                        SpeedProfile.minTransit(y, obj.speedLimit, obj.accelLimit), rhoAgent]), obj.horizon()];
                 end
                 d = struct('R', R, 'A', A, 'B', B, 'j', k, 'rho', rho0, 'w', weights, ...
                     'y', y, 'vb', obj.speedLimit, 'ub', obj.accelLimit);
@@ -397,7 +414,7 @@ classdef EDRHCPolicy < Policy
             % x, y >= 0 with Aineq*[x; y; rho] <= bineq (paper Sec. III, eqs. 20, 36, 46), and
             % the extra constraint ac * [ui vi uj vj rho]' <= bc if ac is not empty
             Rj = d.R(d.j); Aj = d.A(d.j); Bj = d.B(d.j);
-            H = obj.H;
+            H = obj.horizon();
             if Bj > Aj
                 % u_j that drives R_j to 0 if j is reached at t + rho is c00 + c1*rho; c1 is
                 % also its growth per unit of waiting before leaving i
@@ -468,10 +485,10 @@ classdef EDRHCPolicy < Policy
             if fixed
                 M = c.M(:, 1:2); c0 = c.c + rhoRange(1) * c.M(:, 3)';
                 bin = bin - Ain(:, 3) * rhoRange(1); Ain = Ain(:, 1:2);
-                lb = [0 0]; ub = obj.H * [1 1];
+                lb = [0 0]; ub = obj.horizon() * [1 1];
             else
                 M = c.M; c0 = c.c;
-                lb = [0 0 rhoRange(1)]; ub = [obj.H obj.H rhoRange(2)];
+                lb = [0 0 rhoRange(1)]; ub = [obj.horizon() obj.horizon() rhoRange(2)];
             end
             n = numel(lb);
             for v = n:-1:1   % bounds implied by rows whose other x, y coefficients are >= 0 (rho first)

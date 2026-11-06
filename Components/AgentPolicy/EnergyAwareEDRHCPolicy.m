@@ -77,7 +77,6 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         omega = 0                      % energy weight of the global objective [1/s]
         alphaH = 0                     % energy weight of the "alphaH" form
         socMin = 0.1                   % reserve E_min = socMin Q
-        missionEnd = Inf               % mission end T [s]
         bookingStrategy = "a"          % "a" predicted need (default), "b" latest safe slot (also after
                                        % each commit), "R" placed at the predicted need and then
                                        % optimized by the station, "e" chosen by RHCP3 with the plan
@@ -202,6 +201,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
         leftAt                         % agent index -> time it left the targets for its station
         lastE                          % agent index -> [time, energy left] at its last step charging
         chargeDock                     % agent index -> dock it charges on
+        fillDock                       % agent index -> [station, dock] of its fill-in session (holds no cells)
         exitDest                       % agent index -> target it heads for through covered ones
         holds                          % agents docked full to their slot's end (holdSlot "window")
         lastReport                     % "R": agent index -> g_need of its last report
@@ -285,6 +285,9 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             end
             if obj.modeOf(agent) == "waiting" && obj.fillIn
                 obj.tryFillIn(agent, model, simTime);
+            end
+            if obj.modeOf(agent) == "charging" && isKey(obj.fillDock, agent.index)
+                obj.endFillInBeforeBooking(agent, simTime);
             end
             if obj.modeOf(agent) == "charging"
                 bat = agent.battery;
@@ -533,6 +536,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             obj.leftAt = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.lastE = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.chargeDock = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.fillDock = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.exitDest = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.holds = containers.Map('KeyType', 'double', 'ValueType', 'logical');
             obj.lastReport = containers.Map('KeyType', 'double', 'ValueType', 'any');
@@ -550,7 +554,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
                 'reports', 0, 'proposals', 0, 'commits', 0, 'cancels', 0, ...   % "R"'s protocol
                 'plans', 0, 'planMean', 0, 'muEMean', 0, ...         % committed plans: mean length, mean hhat_E price
                 'tails', 0, 'preempted', 0, ...                      % tail slots taken and yielded
-                'fillIns', 0, 'exits', 0, ...                        % fill-in sessions; exits from stations
+                'fillIns', 0, 'fillCuts', 0, 'exits', 0, ...         % fill-in sessions (cut short by a booking); exits
                 'd2Dwells', 0, 'd2Time', 0, 'd2Fills', 0, ...        % dwells to the latest departure: count, planned s; D2 fill-ins
                 'bookingChanges', 0, ...                            % bookings made, moved and released
                 'messages', 0, 'relays', 0);                        % end-to-end messages; their relay hops
@@ -1380,10 +1384,28 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             end
         end
 
+        function endFillInBeforeBooking(obj, agent, t)
+            % A fill-in session ends 2 steps before the next start booked or claimed by another
+            % agent on its dock (bookings may take the cells of a fill-in, as Lemma 5 needs)
+            sd = obj.fillDock(agent.index); G = obj.grids(sd(1)); len = obj.slotLens(sd(1));
+            kNow = max(floor(t / len + 1e-9), 0);
+            if kNow + 2 > size(G, 2), return; end
+            row = G(sd(2), kNow + 2:end);   % the slots after the current one
+            k = find(row ~= 0 & row ~= agent.index, 1);
+            if isempty(k), return; end
+            stop = (kNow + k) * len - 2 * obj.stepSize;
+            if t + agent.dwellRemaining <= stop, return; end
+            agent.dwellRemaining = max(stop - t, 1e-3);
+            n = find([obj.sessions.agent] == agent.index & isnan([obj.sessions.stop]), 1, 'last');
+            if ~isempty(n), obj.sessions(n).slotEnd = min(obj.sessions(n).slotEnd, t + agent.dwellRemaining); end
+            obj.stats.fillCuts = obj.stats.fillCuts + 1;
+        end
+
         function tryFillIn(obj, agent, model, t)
             % Fill-in charging: on any idle dock whose current slot is free, until the next slot
-            % booked there by another agent (or until full), if that is at least minFill away; the
-            % cells it uses are held, and its own booking stays until it books again
+            % booked there by another agent (or until full), if that is at least minFill away. It
+            % holds no cells, so later bookings may take them, and it ends before the first of
+            % those (endFillInBeforeBooking); its own booking stays until it books again
             b = obj.bookings(agent.index); s = b.station; G = obj.grids(s); len = b.length;
             kNow = max(floor(t / len + 1e-9), 0);
             best = [0, -Inf];   % dock, end of the fill-in
@@ -1402,10 +1424,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             toFull = bat.energyUsed / max(st.chargePower - bat.idleDraw(), eps);
             if st.swapTime > 0, toFull = st.swapTime; elseif isa(bat, 'Battery1RC'), toFull = Inf; end
             stop = min(fillEnd, t + toFull);
-            kEnd = min(ceil(stop / len - 1e-9), size(G, 2));
-            cells = G(d, kNow + 1:kEnd);
-            G(d, kNow + find(cells == 0)) = agent.index;   % hold the cells it uses
-            obj.grids(s) = G;
+            obj.fillDock(agent.index) = [s, d];
             obj.note(5, agent, s, t);
             obj.modes(agent.index) = "charging";
             agent.chargeAllowed = true;
@@ -1552,6 +1571,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             % the window at the slot's end; leaving earlier is safe only with a slot in hand
             tf = false;
             if obj.holdSlot ~= "window" || isKey(obj.holds, agent.index) || ~isKey(obj.bookings, agent.index), return; end
+            if isKey(obj.fillDock, agent.index), return; end   % a fill-in session is not in its own slot
             b = obj.bookings(agent.index);
             slotEnd = b.start + b.length;
             if t >= slotEnd - 1e-6 || obj.slotInWindow(agent, model, i, t), return; end
@@ -1630,6 +1650,7 @@ classdef EnergyAwareEDRHCPolicy < EDRHCPolicy
             if isKey(obj.tails, agent.index), remove(obj.tails, agent.index); end
             if isKey(obj.holds, agent.index), remove(obj.holds, agent.index); end
             if isKey(obj.chargeDock, agent.index), remove(obj.chargeDock, agent.index); end
+            if isKey(obj.fillDock, agent.index), remove(obj.fillDock, agent.index); end
             obj.modes(agent.index) = "monitor";
             agent.chargeAllowed = false;
             obj.lastCharge(agent.index) = [t, agent.battery.remaining];

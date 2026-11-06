@@ -25,6 +25,7 @@ classdef ScenarioModel < handle
         agentSpec = AgentSpec() % spec (settings) of the agents added next; the type is agentFactory
         background = ""         % background image of the layout (file name; see backgroundFile)
         registry                % ComponentRegistry (policy assumptions)
+        noEdgeWarned = []       % agents already warned that a policy sent them along no edge
     end
 
     properties (Constant)
@@ -229,6 +230,10 @@ classdef ScenarioModel < handle
                             % a.dwellRemaining themselves) is spent at the current target
                             % before leaving, like the RHC dwells
                             if isfield(cmd, 'dwellSeconds'), a.dwellRemaining = cmd.dwellSeconds; end
+                        elseif ~ismember(a.index, obj.noEdgeWarned)
+                            obj.noEdgeWarned(end+1) = a.index;
+                            warning('ScenarioModel:NoEdge', ['Agent %d: no edge from target %d to target %d; ' ...
+                                'the move is ignored (warned once per agent)'], a.index, a.current_target_idx, cmd.targetIdx);
                         end
                     end
                 end
@@ -343,11 +348,17 @@ classdef ScenarioModel < handle
             if any(r0 ~= 0)                                                   % battery losses
                 s.agentBatteryR0 = r0; s.agentBatteryVoc = arrayfun(@(a) a.battery.Voc, obj.agents);
             end
+            kp = arrayfun(@(a) gainOf(a, 'kp'), obj.agents); kd = arrayfun(@(a) gainOf(a, 'kd'), obj.agents);
+            if any(~isnan(kp)), s.agentKp = kp; s.agentKd = kd; end          % tracking gains (Physical Agents)
             st = find(arrayfun(@(t) isa(t, 'ChargingStation'), obj.targets));
             s.chargers = st;                                                  % charging stations (targets)
             s.chargePower = arrayfun(@(k) obj.targets(k).chargePower, st);    % their power [W]
             docks = arrayfun(@(k) obj.targets(k).docks, st);
             if any(isfinite(docks)), s.chargerDocks = docks; end              % their docks (if limited)
+            swap = arrayfun(@(k) obj.targets(k).swapTime, st);
+            if any(swap > 0), s.chargerSwapTime = swap; end                   % battery swap stations
+            if ~isequal(obj.bounds, [0 100 0 100]), s.bounds = obj.bounds; end
+            if obj.detectionRadius ~= 1.2, s.detectionRadius = obj.detectionRadius; end
             s.background = obj.background;                                    % background image file
             s.targetType = obj.targetType;                                    % target type (registry name)
             s.uncertaintyMode = obj.uncertaintyMode;
@@ -359,11 +370,14 @@ classdef ScenarioModel < handle
         function importLayout(obj, s)
             % Fields missing from older files keep their defaults; A, B, R0 and agentSpeed may
             % also be scalars that apply to every target / agent
+            assert(isfield(s, 'targets'), 'ScenarioModel:Layout', 'A layout needs the field targets (an n x 2 array)');
             obj.clearAll();
+            type = "Uncertainty Target";   % a file without a target type: the default, not the last one
             if isfield(s, 'targetType') && ismember(string(s.targetType), obj.registry.keysFor('targettype'))
-                obj.targetFactory = obj.registry.factoryFor('targettype', char(s.targetType));
-                obj.targetType = string(s.targetType);
+                type = string(s.targetType);
             end
+            obj.targetFactory = obj.registry.factoryFor('targettype', char(type));
+            obj.targetType = type;
             stations = [];
             if isfield(s, 'chargers'), stations = s.chargers(:)'; end
             for k = 1:size(s.targets, 1)
@@ -373,6 +387,8 @@ classdef ScenarioModel < handle
                     if ~isempty(p), t.chargePower = p; end
                     m = layoutValue(s, 'chargerDocks', find(stations == k, 1));
                     if ~isempty(m), t.docks = m; end
+                    w = layoutValue(s, 'chargerSwapTime', find(stations == k, 1));
+                    if ~isempty(w), t.swapTime = w; end
                     obj.targets(end+1) = t;
                 else
                     t = obj.addTarget(s.targets(k,:));
@@ -380,8 +396,12 @@ classdef ScenarioModel < handle
                 t.setRates(layoutValue(s, 'A', k), layoutValue(s, 'B', k), layoutValue(s, 'R0', k));
             end
             if isfield(s, 'walls'), obj.walls = s.walls; end
-            for k = 1:size(s.edges, 1)
-                obj.addEdgeByTargets(double(s.edges(k,1)), double(s.edges(k,2)));
+            if isfield(s, 'bounds'), obj.bounds = s.bounds; end
+            if isfield(s, 'detectionRadius'), obj.detectionRadius = s.detectionRadius; end
+            if isfield(s, 'edges')
+                for k = 1:size(s.edges, 1)
+                    obj.addEdgeByTargets(double(s.edges(k,1)), double(s.edges(k,2)));
+                end
             end
             if isfield(s, 'uncertaintyMode'), obj.setUncertaintyMode(s.uncertaintyMode); end
             obj.background = "";
@@ -404,7 +424,11 @@ classdef ScenarioModel < handle
                         val = layoutValue(s, char("agent" + f), k);
                         if ~isempty(val), spec.(lower(extractBefore(f, 2)) + extractAfter(f, 1)) = val; end
                     end
-                    obj.addAgentOnTarget(obj.targets(s.agentStarts(k)).position, spec.maxSpeed, 1e-6, spec);
+                    g = layoutValue(s, 'agentKp', k); if ~isempty(g) && ~isnan(g), spec.kp = g; end
+                    g = layoutValue(s, 'agentKd', k); if ~isempty(g) && ~isnan(g), spec.kd = g; end
+                    a = obj.addAgentOnTarget(obj.targets(s.agentStarts(k)).position, spec.maxSpeed, 1e-6, spec);
+                    a.current_target_idx = s.agentStarts(k);   % the stored target (not the nearest of
+                    a.initialTargetIdx = s.agentStarts(k);     % two targets at one point)
                 end
             end
         end
@@ -440,7 +464,7 @@ classdef ScenarioModel < handle
         end
 
         function clearAll(obj)
-            obj.agents = []; obj.targets = Target.empty; obj.edges = Edge.empty;
+            obj.agents = []; obj.targets = Target.empty; obj.edges = Edge.empty; obj.noEdgeWarned = [];
             obj.walls = []; obj.cumUncertaintyIntegral = 0; obj.hasLastSample = false;
             obj.lastLogTime = 0; obj.lastUncertainty = 0;
             obj.resetPolicyReservations();
@@ -502,4 +526,10 @@ v = [];
 if ~isfield(s, name) || isempty(s.(name)), return; end
 v = s.(name);
 if ~isscalar(v), v = v(k); end
+end
+
+function g = gainOf(a, name)
+% A Physical Agent's tracking gain (NaN for agent types without a tracking controller)
+g = NaN;
+if isprop(a, 'controller') && ~isempty(a.controller) && isprop(a.controller, name), g = a.controller.(name); end
 end

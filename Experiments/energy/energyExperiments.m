@@ -176,7 +176,7 @@ kappas = [0 0.25 0.5 1 2 4];
 if opts.Quick, kappas = [0 1]; end
 sc = "Energy_Office_NoStation";
 for s = seeds5
-    p = robotLimits(base(sc, T, s)); p.Policy = "ED-ORHC-SO"; p.Agent_profile = "SO";
+    p = robotLimits(base(sc, T, s)); p.Policy = "ED-ORHC-SO"; p.Agent_profile = "SO"; p.Policy_capHorizon = true;
     add("S9", sc, "ED-ORHC-SO", s, "", p);
     for k = kappas
         p = base(sc, T, s); p.Policy = "Energy-Aware ED-RHC"; p.Policy_priceScale = 0;
@@ -258,6 +258,7 @@ switch m
 end
 if startsWith(m, "ED-ORHC") || m == "BA-SO", p = robotLimits(p); end   % SO plans within the robots' limits
 if startsWith(m, "ED-"), p.Policy_avoidStations = true; end   % no accidental visits to or charging at stations
+if startsWith(m, "ED-"), p.Policy_capHorizon = true; end      % H = min(H, T - t), as in [16] and the JS simulator
 end
 
 function p = robotLimits(p)
@@ -292,7 +293,9 @@ switch L.Study(id)
         p.Policy_alphaH = f * R(1).stats.muEMean / R(1).stats.planMean;
     case "S8"   % the largest error per transit, and of the SOC estimate, over the runs without margins
         tr = [R.transits];
-        p.Policy_transitMargins = [max(max([tr.actual] - [tr.planned]), 0), max(max([tr.cellE] - [tr.planE]), 0)];
+        pl = [tr.planned];   % against the policy's planned transit where it set one
+        if isfield(tr, 'plannedByPolicy'), pp = [tr.plannedByPolicy]; pl(~isnan(pp)) = pp(~isnan(pp)); end
+        p.Policy_transitMargins = [max(max([tr.actual] - pl), 0), max(max([tr.cellE] - [tr.planE]), 0)];
         p.Policy_marginEnergy = max([R.socErrMax]) * R(1).capacity;
     case "S9"   % omega = kappa J_R/(N P) of the kappa = 0 run of the same seed
         k = str2double(extractAfter(L.Variant(id), "kappa "));
