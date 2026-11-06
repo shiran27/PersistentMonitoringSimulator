@@ -20,17 +20,17 @@ The reference scenario (Stevens Smart Lab) under ED-RHC after 60 s: the **Tools*
 ![Main UI overview](screenshots/overview.png)
 
 ### Building a scenario
-Targets, edges, and walls drawn on the canvas before running the simulation.
+A ready-made scenario as loaded (the office floor with a charging dock): targets, edges, walls, the charging station and three agents, before the run. The editing tools (**Add Target**, **Add Edge**, **Add Wall**, **Add Station**, **Add Agent**) build a scenario the same way.
 
 ![Scenario with targets, edges, and walls](screenshots/scenario.png)
 
 ### Simulation running
-Agents following their paths mid-simulation. The component dropdowns of the Tools panel are locked while the simulation runs.
+The campus under ED-RHC at 25 s, with the agents on their paths. The component dropdowns of the Tools panel are locked while the simulation runs.
 
 ![Simulation in progress](screenshots/running.png)
 
 ### Objective plot
-The objective function `J(t)` tracked over the course of a run.
+The objective window: `J(t)` of the reference scenario under Random Walk over the earlier ED-RHC run (earlier runs are drawn faded). `Experiments/makeReadmeScreenshots` makes these four screenshots.
 
 ![Objective function over time](screenshots/objective.png)
 
