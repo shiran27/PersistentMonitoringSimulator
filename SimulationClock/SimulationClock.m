@@ -16,22 +16,24 @@ classdef SimulationClock < handle
             obj.currentTime = 0;
         end
 
-        % We remove the multiplication here to keep physics stable
         function dtSim = tick(obj)
-            dtSim = obj.dt; 
-
+            % One step of dt (timeScale only sets how many steps the GUI runs per frame). The
+            % time stays on the grid k dt, so no round-off accumulates, and the last step ends
+            % exactly at endTime (shortened if endTime is not a multiple of dt)
             remaining = obj.endTime - obj.currentTime;
             if remaining <= 0
                 dtSim = 0;
                 obj.currentTime = obj.endTime;
                 return;
             end
-
-            if dtSim > remaining
+            next = (floor(obj.currentTime / obj.dt + 1e-6) + 1) * obj.dt;
+            if next >= obj.endTime - 1e-9 * obj.dt
                 dtSim = remaining;
+                obj.currentTime = obj.endTime;
+            else
+                dtSim = obj.dt;
+                obj.currentTime = next;
             end
-
-            obj.currentTime = obj.currentTime + dtSim;
         end
 
         function tf = isFinished(obj)

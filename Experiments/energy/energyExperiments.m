@@ -176,7 +176,7 @@ kappas = [0 0.25 0.5 1 2 4];
 if opts.Quick, kappas = [0 1]; end
 sc = "Energy_Office_NoStation";
 for s = seeds5
-    p = robotLimits(base(sc, T, s)); p.Policy = "ED-ORHC-SO"; p.Agent_profile = "SO"; p.Policy_capHorizon = true;
+    p = robotLimits(base(sc, T, s)); p.Policy = "ED-ORHC-SO"; p.Agent_profile = "SO";
     add("S9", sc, "ED-ORHC-SO", s, "", p);
     for k = kappas
         p = base(sc, T, s); p.Policy = "Energy-Aware ED-RHC"; p.Policy_priceScale = 0;
@@ -258,7 +258,6 @@ switch m
 end
 if startsWith(m, "ED-ORHC") || m == "BA-SO", p = robotLimits(p); end   % SO plans within the robots' limits
 if startsWith(m, "ED-"), p.Policy_avoidStations = true; end   % no accidental visits to or charging at stations
-if startsWith(m, "ED-"), p.Policy_capHorizon = true; end      % H = min(H, T - t), as in [16] and the JS simulator
 end
 
 function p = robotLimits(p)

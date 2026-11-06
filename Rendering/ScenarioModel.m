@@ -177,6 +177,13 @@ classdef ScenarioModel < handle
         end
 
         function step(obj, dtSim, simTime)
+            if ~obj.hasLastSample
+                % The objective's first sample: R(0) at the start of the first step, so that
+                % the integral of J(t) covers [0, dt] too
+                obj.lastLogTime = simTime - dtSim;
+                obj.lastUncertainty = sum([obj.targets.R]);
+                obj.hasLastSample = true;
+            end
             if isempty(obj.agents), return; end
 
             % 1. UPDATE RESIDING AGENTS AT TARGETS FIRST

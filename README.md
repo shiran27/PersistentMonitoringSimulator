@@ -261,7 +261,7 @@ Agents may share targets. During a spike that the agents present cannot overcome
   - It solves RHCP1 on arrival (active time `u_i`), RHCP2 when `R_i` reaches 0 (inactive time `v_i`), and RHCP3 when it leaves (next target `j`).
   - It re-solves RHCP1/RHCP2 when a neighbor becomes covered or uncovered.
 - **Agents avoid each other.** A target is covered while another agent is at it or on its way to it. Covered neighbors are left out, so two agents never share a target.
-- **Variable horizon.** Each RHCP plans `[u_i, v_i]` at `i`, the transit to `j`, and `[u_j, v_j]` at `j` over a horizon `w <= H` (`H = 250` by default). It minimizes the neighborhood cost `(1/w) * sum of the integrals of R`.
+- **Variable horizon.** Each RHCP plans `[u_i, v_i]` at `i`, the transit to `j`, and `[u_j, v_j]` at `j` over a horizon `w <= H` (`H = 250` by default), truncated to `H = T - t` near the mission end `T` as in the paper and the JS simulator (`capHorizon = true`; `runTrial` and the GUI set `missionEnd = T`). It minimizes the neighborhood cost `(1/w) * sum of the integrals of R`.
 - **alpha** (a parameter). RHCP3 weights the next target's cost by `alpha` and the others' by `1 - alpha`.
   - The default `"nominal"` is the paper's `alpha = 1/|N_i|^2` (Sec. IV-A, the RHC-alpha method; `N_i` includes `i`), as in the JS simulator.
   - `alpha = 0.5` gives the paper's unweighted RHC method (Sec. III).

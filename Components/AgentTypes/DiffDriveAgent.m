@@ -386,7 +386,7 @@ classdef DiffDriveAgent < Agent
             vb = share * obj.state.maxSpeed; ub = share * obj.state.maxAccel;
             y = G.s(end);
             corners = find(G.h > 0);
-            l = unique([linspace(0, y, min(600, max(2, ceil(y / 0.25) + 1)))'; ...
+            l = unique([linspace(0, y, min(600, max(3, ceil(y / 0.25) + 1)))'; ...   % at least a midpoint: two samples at rest give rho = y/eps
                 G.s(corners) - G.h(corners); G.s(corners) + G.h(corners)]);
             l = l(l >= 0 & l <= y);
             l = l([true; diff(l) > 1e-9]);

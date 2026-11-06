@@ -8,13 +8,13 @@ function T = validateEDRHC(opts)
 % T = 500 s, dt = 0.01 s, H = 250, and service only while an agent is at the target.
 %   T = validateEDRHC()              all presets, both alphas (~10 min)
 %   T = validateEDRHC(Presets=[1 4]) a subset
-%   T = validateEDRHC(CapHorizon=true) with the horizon capped at T - t near the mission end
+%   T = validateEDRHC(CapHorizon=false) with the horizon not capped at T - t near the mission end
 % JsJ holds the JS J(T), read from simulateHybridSystemFast on 2026-10-20; three of them are in
 % the paper's Table I (1-Agent 5T = SASE2, 2-Agent 5T = MASE2, 3-Agent General = MASE1).
 arguments
     opts.Presets (1,:) double = 1:8
     opts.Dt (1,1) double = 0.01
-    opts.CapHorizon (1,1) logical = false   % EDRHCPolicy.capHorizon (the JS simulator caps it)
+    opts.CapHorizon (1,1) logical = true    % EDRHCPolicy.capHorizon (the JS simulator caps it)
 end
 presets = {
     % layout file            JS RHC     JS RHC-alpha (methods 3 and 4)

@@ -72,9 +72,9 @@ classdef EDRHCPolicy < Policy
                              % until R_i = 0 (no RHCP1), and the RHCPs only plan visits to j
                              % that clear it (the JS simulator's energy-aware methods)
         H = 250              % upper bound on the planning horizon w [s]
-        capHorizon = false   % true: H = min(H, T - t) near the mission end T (as the Automatica paper
-                             % and the JS simulator do); false: H up to the end
-        missionEnd = Inf     % mission end T [s] (runTrial sets it)
+        capHorizon = true    % true: H = min(H, T - t) near the mission end T, as in the Automatica
+                             % paper and the JS simulator; false: H up to the end
+        missionEnd = Inf     % mission end T [s] (runTrial and the GUI set it)
         recheckTime = 0      % wait before RHCP3 is tried again when every neighbor is covered
                              % (0 = every step, as in the JS simulator)
         gridSize = 15        % grid points per decision variable before the fmincon refinement
