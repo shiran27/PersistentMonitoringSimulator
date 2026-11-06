@@ -19,13 +19,16 @@ classdef BatteryAwareRHCPolicy < EDRHCPolicy
     %
     % Recharging: when no uncovered neighbor can be afforded even without dwelling (or, with
     % every neighbor covered, when it cannot afford to wait), the agent heads to the nearest
-    % station along its cheapest route, one edge per decision. It waits
-    % (queueWait) while another agent is at or heading to that station, rests there until the
-    % battery is full (the station charges at its chargePower), then resumes ED-RHC with RHCP3.
-    % Agents on their way to a station do not block the targets they pass, so an agent leaving
-    % a station can always get out.
+    % station along its cheapest route, one edge per decision. Before its last edge it joins the
+    % station's queue (first come, first served) and waits (queueWait) until a dock is free for
+    % every agent ahead of it and for itself; it then rests there until the battery is full (the
+    % station charges at its chargePower) and resumes ED-RHC with RHCP3. An agent that is
+    % already full when it arrives leaves at once and starts no session. Agents on their way to
+    % a station do not block the targets they pass, so an agent leaving a station can always
+    % get out.
     %
-    % Without stations in the model it is ED-RHC. The transit model is ED-RHC's "FO-0"
+    % Without stations in the model, or for an agent from whose target no station can be
+    % reached, it is ED-RHC (with one warning). The transit model is ED-RHC's "FO-0"
     % by default; "SO" and "FO-3" also work (the constraint then takes the acceleration energy
     % at the shortest transit searched, an upper bound).
     properties
@@ -40,6 +43,8 @@ classdef BatteryAwareRHCPolicy < EDRHCPolicy
     properties (Access = private)
         modes             % agent index -> "monitor", "toStation" or "charging"
         routes            % agent index -> cheapest routes to the stations (see route)
+        waiting           % station index -> agents waiting to go there, first come, first served
+        warnedNoStation = false
     end
 
     methods
@@ -75,14 +80,23 @@ classdef BatteryAwareRHCPolicy < EDRHCPolicy
                     end
                 case "toStation"
                     if isa(model.targets(i), 'ChargingStation')
-                        obj.modes(agent.index) = "charging";
-                        obj.charges = obj.charges + 1;
-                        agent.dwellRemaining = obj.timeToFull(agent, model.targets(i));
+                        if obj.isFull(agent)   % nothing to charge: no session
+                            obj.modes(agent.index) = "monitor";
+                            obj.forgetAgent(agent.index);
+                            cmd = obj.depart(agent, model, adj, i, simTime);
+                        else
+                            obj.modes(agent.index) = "charging";
+                            obj.charges = obj.charges + 1;
+                            agent.dwellRemaining = obj.timeToFull(agent, model.targets(i));
+                        end
+                    elseif obj.noStation(agent, model, i)
+                        obj.modes(agent.index) = "monitor";
+                        cmd = plan@EDRHCPolicy(obj, agent, model, adj, i, simTime);
                     else
                         cmd = obj.hop(agent, model, i);
                     end
                 otherwise
-                    if obj.canAffordNeighbor(agent, model, adj, i)
+                    if obj.canAffordNeighbor(agent, model, adj, i) || obj.noStation(agent, model, i)
                         cmd = plan@EDRHCPolicy(obj, agent, model, adj, i, simTime);
                     else
                         obj.modes(agent.index) = "toStation";
@@ -114,6 +128,8 @@ classdef BatteryAwareRHCPolicy < EDRHCPolicy
                 a = zeros(1, 5); b = -1;
                 return;
             end
+            r = obj.route(agent, model);
+            if ~isfinite(r.E(i)), return; end   % no station reachable: plain ED-RHC (noStation)
             bat = agent.battery;
             budget = bat.remaining - obj.socMin * bat.capacity - obj.reserve(agent, model, j);
             Pi = bat.idlePower();
@@ -147,6 +163,8 @@ classdef BatteryAwareRHCPolicy < EDRHCPolicy
         function resetModes(obj)
             obj.modes = containers.Map('KeyType', 'double', 'ValueType', 'any');
             obj.routes = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.waiting = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            obj.warnedNoStation = false;
         end
 
         function s = stations(~, model)
@@ -211,9 +229,18 @@ classdef BatteryAwareRHCPolicy < EDRHCPolicy
                 agent.dwellRemaining = obj.queueWait;
                 return;
             end
-            if isa(model.targets(k), 'ChargingStation') && obj.taken(agent, model, k)
-                agent.dwellRemaining = obj.queueWait;   % taken: queue here
-                return;
+            if isa(model.targets(k), 'ChargingStation')
+                % first come, first served: join the station's queue, and go only when a dock
+                % is free for every agent ahead in the queue and for this one
+                q = obj.queueOf(model, k);
+                if ~ismember(agent.index, q), q(end+1) = agent.index; end
+                [n, m] = obj.occupancy(agent, model, k);
+                if find(q == agent.index, 1) > m - n
+                    obj.waiting(k) = q;
+                    agent.dwellRemaining = obj.queueWait;   % taken: queue here
+                    return;
+                end
+                obj.waiting(k) = q(q ~= agent.index);
             end
             agent.transitTime = r.rho(i, k);
             agent.transitProfile = ""; agent.transitLimits = [Inf Inf];
@@ -221,10 +248,32 @@ classdef BatteryAwareRHCPolicy < EDRHCPolicy
             cmd.targetIdx = k;
         end
 
-        function tf = taken(obj, agent, model, k)
-            % Is another agent charging at station k or heading to it (dockAware: are all its docks
-            % occupied or claimed)? An agent whose battery ran out on the way does not count; one
-            % that stopped at the station does
+        function tf = noStation(obj, agent, model, i)
+            % No station reachable from target i: fall back to ED-RHC (and warn once)
+            r = obj.route(agent, model);
+            tf = ~isfinite(r.E(i));
+            if tf && ~obj.warnedNoStation
+                warning('BatteryAwareRHCPolicy:NoStation', ...
+                    'No charging station is reachable from target %d; the agent continues with ED-RHC.', i);
+                obj.warnedNoStation = true;
+            end
+        end
+
+        function q = queueOf(obj, model, k)
+            % The agents waiting for station k, without those that no longer head there
+            q = zeros(1, 0);
+            if isKey(obj.waiting, k), q = obj.waiting(k); end
+            keep = false(size(q));
+            for c = 1:numel(q)
+                o = model.agents([model.agents.index] == q(c));
+                if isempty(o), continue; end
+                keep(c) = ~o.batteryEmpty() && isKey(obj.modes, q(c)) && obj.modes(q(c)) == "toStation";
+            end
+            q = q(keep);
+        end
+
+        function [n, m] = occupancy(obj, agent, model, k)
+            % Agents charging at station k or heading to it, and the docks it offers this policy
             st = model.targets(k);
             m = 1;
             if obj.dockAware, m = st.docks; end
@@ -235,7 +284,6 @@ classdef BatteryAwareRHCPolicy < EDRHCPolicy
                     n = n + 1;
                 end
             end
-            tf = n >= m;
         end
 
         function E = edgeEnergy(obj, agent, model, i, j, rho)

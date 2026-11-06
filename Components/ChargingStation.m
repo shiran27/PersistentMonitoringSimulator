@@ -23,6 +23,7 @@ classdef ChargingStation < Target
 
     properties (Access = private)
         swapClock              % agent index -> time docked (swapping)
+        queue = []             % indices of the agents waiting for a dock, in arrival order
     end
 
     methods
@@ -44,11 +45,15 @@ classdef ChargingStation < Target
             if isfinite(obj.docks) && ~isempty(ag)
                 ids = [ag.index];
                 obj.docked = obj.docked(ismember(obj.docked, ids));        % those still here
-                waiting = ids(~ismember(ids, obj.docked));
-                obj.docked = [obj.docked, waiting(1:min(end, obj.docks - numel(obj.docked)))];
+                obj.queue = obj.queue(ismember(obj.queue, ids) & ~ismember(obj.queue, obj.docked));
+                obj.queue = [obj.queue, ids(~ismember(ids, obj.docked) & ~ismember(ids, obj.queue))];
+                take = obj.queue(1:min(end, max(obj.docks - numel(obj.docked), 0)));   % first come, first served
+                obj.docked = [obj.docked, take];
+                obj.queue = obj.queue(numel(take) + 1:end);
                 ag = ag(ismember(ids, obj.docked));
             elseif isempty(ag)
                 obj.docked = [];
+                obj.queue = [];
             end
             obj.dockTime = obj.dockTime + numel(ag) * dt;
             if obj.swapTime > 0   % swapping: a full battery once docked for swapTime
@@ -97,6 +102,7 @@ classdef ChargingStation < Target
             obj.busyTime = 0;
             obj.dockTime = 0;
             obj.docked = [];
+            obj.queue = [];
             obj.swapClock = containers.Map('KeyType', 'double', 'ValueType', 'double');
             obj.color = [1 0.82 0.1];
             obj.markerSize = 12;
