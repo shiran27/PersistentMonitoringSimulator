@@ -100,6 +100,7 @@ classdef MainUI < handle
             cat = scenarioCatalog();
             names = ["(build your own)"; cat.Name];
             shown = MainUI.listed(names, P.scenario); shown(1) = true;
+            shown(names == string(obj.scenarioDropdown.Value)) = true;   % the loaded scenario stays named
             MainUI.showOnly(obj.scenarioDropdown, names, names, names(shown), @(~) []);
             obj.setStatus("Paper profile: " + P.Name + " (" + P.Description + ")");
         end
@@ -124,6 +125,7 @@ classdef MainUI < handle
         function loadLayout(obj, file)
             tmp = load(file, 's');
             obj.model.importLayout(tmp.s);
+            obj.scenarioDropdown.Value = '(build your own)';   % loadScenario then names the scenario
             % The layout may carry its target type, uncertainty mode and agents; show them
             MainUI.showValue(obj.targetTypeDropdown, obj.model.targetType);
             obj.uncertaintyDropdown.Value = obj.model.uncertaintyMode;
@@ -149,7 +151,7 @@ classdef MainUI < handle
     end
 
     properties (Constant)
-        profileLabels = ["FO-0 (constant)", "SO (smooth)", "FO-3 (trapezoid)"]   % of SpeedProfile.names
+        profileLabels = ["FO-0 (constant speed)", "SO (smooth)", "FO-3 (trapezoid)"]   % of SpeedProfile.names
     end
 
     methods (Static)
@@ -581,6 +583,7 @@ classdef MainUI < handle
             obj.clock.reset();
             if ~isempty(obj.objectiveWin), obj.objectiveWin.clearAllTrials(); end
             obj.setTime(0, obj.clock.endTime);
+            obj.scenarioDropdown.Value = '(build your own)';
             obj.setStatus("Cleared environment layout and trials.");
         end
         

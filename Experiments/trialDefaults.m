@@ -8,7 +8,7 @@ function p = trialDefaults()
 p = struct( ...
     'Policy', "Joint RHC", ...                    % any ComponentRegistry policy name
     'Planner', "Dijkstra Corners", ...            % any ComponentRegistry path planner name
-    'AgentType', "Linear Agent", ...              % any ComponentRegistry agent type name
+    'AgentType', "Abstract Agent", ...            % any ComponentRegistry agent type name ("Linear Agent" is its old name)
     'UncertaintyMode', "Dynamic Uncertainty", ... % | "Static Priority Target" | "Static Uniform"
     'Layout', "ExampleLayout1.mat", ...           % file in Configurations/
     'NumAgents', 2, ...                           % ignored when AgentStarts is given

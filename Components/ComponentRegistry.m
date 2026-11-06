@@ -122,6 +122,9 @@ classdef ComponentRegistry < handle
                 h = obj.aliases(name);
             elseif ~isKey(m, name) && isKey(obj.retired, char(name))
                 error('ComponentRegistry:Retired', '"%s" was %s', name, obj.retired(char(name)));
+            elseif ~isKey(m, name)
+                error('ComponentRegistry:Unknown', 'Unknown %s "%s"; registered: %s', kind, name, ...
+                    strjoin(string(m.keys), ', '));
             else
                 h = m(name);
             end

@@ -29,10 +29,12 @@ classdef DiffDriveAgent < Agent
     % rounded path's largest curvature kappa (the outer wheel at vbar), and shortestTransit /
     % limitTransit, the fastest profile within it. transitPlanEnergy is the parent's plan model.
     %
-    % Records: transits (per transit: planned and actual duration, the plan's energy and the
+    % Records: transits (per transit: planned duration (the robot's own and the policy's, NaN when
+    % it set none) and actual duration, the plan's energy and the
     % cells' energy, and whether it was delayed), socLog ([time, true SOC, estimate] once a
     % second) and delayEvents.
     properties
+        sensorSeedBase = 0        % the battery's sensor-noise seed is sensorSeedBase + index (runTrial: 1000 Seed)
         mass = 20                 % [kg]
         wheelRadius = 0.05        % r [m]
         track = 0.3               % b, wheel separation [m]
@@ -50,7 +52,7 @@ classdef DiffDriveAgent < Agent
         arriveTol = 0.15          % arrived within this distance once the reference stops [m]
         lagTol = 0.2              % re-time the rest when this far behind the reference [m]
         substep = 0.005           % integration step of the drive [s]
-        transits = struct('planned', {}, 'actual', {}, 'planE', {}, 'cellE', {}, 'delayed', {})
+        transits = struct('planned', {}, 'plannedByPolicy', {}, 'actual', {}, 'planE', {}, 'cellE', {}, 'delayed', {})
         socLog = zeros(0, 3)      % [time, true SOC, estimated SOC], once a second
         delayEvents = 0
     end
@@ -81,7 +83,7 @@ classdef DiffDriveAgent < Agent
             obj.profile = opts.Profile;
             obj.state.maxAccel = 1;
             obj.battery = Battery1RC();
-            obj.battery.sensorSeed = index;
+            obj.battery.sensorSeed = obj.sensorSeedBase + index;
         end
 
         function resetToInitial(obj)
@@ -89,7 +91,7 @@ classdef DiffDriveAgent < Agent
             obj.leg = []; obj.holdPoint = [];
             obj.v = 0; obj.w = 0; obj.clock = 0; obj.lastLog = -Inf;
             obj.transits = obj.transits([]); obj.socLog = zeros(0, 3); obj.delayEvents = 0;
-            obj.battery.sensorSeed = obj.index;
+            obj.battery.sensorSeed = obj.sensorSeedBase + obj.index;
             obj.battery.reset();
             obj.fitPhysics();
         end
@@ -128,7 +130,11 @@ classdef DiffDriveAgent < Agent
 
         function rho = shortestTransit(obj, pts)
             % The fastest profile along the rounded path within the planning limits, after the turn
-            % in place to the path's heading when the robot is at the path's start
+            % in place to the path's heading when the robot is at one end of the path (an edge may
+            % be stored in either direction: the path is taken from the robot's end)
+            if norm(pts(end, :) - obj.state.pos) < obj.arriveTol && norm(pts(1, :) - obj.state.pos) >= obj.arriveTol
+                pts = flipud(pts);
+            end
             G = DiffDriveAgent.geometry(pts, obj.cornerRadius);
             P = obj.fastestProfile(G, 1);
             rho = P.rho;
@@ -212,7 +218,8 @@ classdef DiffDriveAgent < Agent
                 'turn', [tTurn, dpsi, obj.state.ori], ...
                 'pRef', G.pts(1, :), 'thRef', th0, 'vRef', 0, 'wRef', 0, ...
                 'lastRetime', -Inf, 'delayed', false, 'start', obj.clock, ...
-                'planE', planE, 'cellE0', obj.battery.energyDrawn, 'vLim', obj.transitLimits(1));
+                'planE', planE, 'cellE0', obj.battery.energyDrawn, 'vLim', obj.transitLimits(1), ...
+                'planPolicy', plan);
             obj.legTime = tTurn + P.rho;
             if plan > 0, obj.legTime = max(plan, obj.legTime); end
             obj.holdPoint = [];
@@ -364,8 +371,9 @@ classdef DiffDriveAgent < Agent
             if ~(near || late), return; end
             actual = obj.clock - L.start;
             planned = obj.legTime;
-            obj.transits(end+1) = struct('planned', planned, 'actual', actual, 'planE', L.planE, ...
-                'cellE', obj.battery.energyDrawn - L.cellE0, 'delayed', L.delayed || late);
+            byPolicy = L.planPolicy; if byPolicy <= 0, byPolicy = NaN; end   % NaN: the policy set no time
+            obj.transits(end+1) = struct('planned', planned, 'plannedByPolicy', byPolicy, 'actual', actual, ...
+                'planE', L.planE, 'cellE', obj.battery.energyDrawn - L.cellE0, 'delayed', L.delayed || late);
             if late && ~L.delayed, obj.delayEvents = obj.delayEvents + 1; end
             obj.holdPoint = L.G.pts(end, :);
             obj.path = []; obj.pathIndex = 1; obj.leg = [];
@@ -378,7 +386,7 @@ classdef DiffDriveAgent < Agent
             vb = share * obj.state.maxSpeed; ub = share * obj.state.maxAccel;
             y = G.s(end);
             corners = find(G.h > 0);
-            l = unique([linspace(0, y, min(600, max(2, ceil(y / 0.25) + 1)))'; ...
+            l = unique([linspace(0, y, min(600, max(3, ceil(y / 0.25) + 1)))'; ...   % at least a midpoint: two samples at rest give rho = y/eps
                 G.s(corners) - G.h(corners); G.s(corners) + G.h(corners)]);
             l = l(l >= 0 & l <= y);
             l = l([true; diff(l) > 1e-9]);
@@ -400,7 +408,7 @@ classdef DiffDriveAgent < Agent
             seg = vecnorm(diff(pts, 1, 1), 2, 2);
             keep = [true; seg > 1e-9];
             pts = pts(keep, :);
-            if size(pts, 1) < 2, pts = [pts; pts + [eps 0]]; end
+            if size(pts, 1) < 2, pts = [pts; pts + [1e-6 0]]; end   % (eps would vanish at |p| > 1)
             seg = vecnorm(diff(pts, 1, 1), 2, 2);
             n = size(pts, 1);
             G.pts = pts;

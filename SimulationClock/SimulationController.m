@@ -23,6 +23,7 @@ classdef SimulationController < handle
         function play(obj)
             if obj.clock.isFinished(), obj.reset(); end
             if obj.isRunning, return; end
+            obj.tellMissionEnd();
             obj.isRunning = true; start(obj.timerObj);
             obj.notifyState();
         end
@@ -35,6 +36,7 @@ classdef SimulationController < handle
         
         function setEndTime(obj, tEnd)
             obj.clock.endTime = max(0, tEnd);
+            obj.tellMissionEnd();
             if obj.clock.currentTime > obj.clock.endTime, obj.clock.currentTime = obj.clock.endTime; end
             if ~isempty(obj.timeCallback), obj.timeCallback(obj.clock.currentTime, obj.clock.endTime); end
         end
@@ -59,6 +61,7 @@ classdef SimulationController < handle
         
         function runToEnd(obj)
             obj.pause();
+            obj.tellMissionEnd();
             obj.isRunning = true; obj.notifyState();
             while ~obj.clock.isFinished()
                 dtSim = obj.clock.tick();
@@ -72,6 +75,13 @@ classdef SimulationController < handle
             end
             obj.renderer.renderAgents(obj.model);
             obj.isRunning = false; obj.notifyState();
+        end
+
+        function tellMissionEnd(obj)
+            % Policies that plan up to the mission end are told the end time, as runTrial does
+            if isempty(obj.model), return; end
+            pol = obj.model.policy;
+            if ~isempty(pol) && isprop(pol, 'missionEnd'), pol.missionEnd = obj.clock.endTime; end
         end
 
         function notifyState(obj)

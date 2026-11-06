@@ -15,6 +15,9 @@ function out = runTrial(params)
 % final value (fields named by metric class).
 
 p = withDefaults(params);
+assert(isnumeric(p.Dt) && isscalar(p.Dt) && p.Dt > 0, 'runTrial:Dt', 'Dt must be a positive time step [s] (got %s)', mat2str(p.Dt));
+assert(isnumeric(p.EndTime) && isscalar(p.EndTime) && p.EndTime > 0, 'runTrial:EndTime', ...
+    'EndTime must be positive [s] (got %s)', mat2str(p.EndTime));
 root = fileparts(fileparts(mfilename('fullpath')));
 if exist('ScenarioModel', 'class') ~= 8
     addpath(genpath(root));  % fallback when the project path is not loaded
@@ -23,10 +26,13 @@ end
 % ---- Build scenario ----
 layoutFile = char(p.Layout);                 % file name in Configurations/, or any full path
 if ~isfile(layoutFile), layoutFile = fullfile(root, 'Configurations', layoutFile); end
-tmp = load(layoutFile, 's');
+assert(isfile(layoutFile), 'runTrial:Layout', 'No layout file %s', layoutFile);
+tmp = load(layoutFile);
+assert(isfield(tmp, 's'), 'runTrial:Layout', '%s holds no layout (a struct named s)', layoutFile);
 if isfield(p, 'TargetType'), tmp.s.targetType = string(p.TargetType); end
 reg = ComponentRegistry();
 p.Policy = string(reg.resolve(char(p.Policy)));   % older names (e.g. 'ED-ORHC-FO') still work
+reg.factoryFor('policy', char(p.Policy));         % an unknown or retired name errors here, by name
 plannerFactory = reg.factoryFor('pathplanner', char(p.Planner));
 model = ScenarioModel(plannerFactory(), reg.factoryFor('agenttype', char(p.AgentType)));
 model.importLayout(tmp.s);
@@ -71,13 +77,22 @@ end
 starts = parseStarts(p.AgentStarts, stored);
 if keepAgents
     assert(~isempty(model.agents), 'runTrial:AgentSettings', 'AgentSettings "layout": %s stores no agents', char(p.Layout));
-    if isnumeric(p.AgentStarts) && numel(p.AgentStarts) == numel(model.agents)
-        for k = 1:numel(model.agents)   % explicit start targets move the layout's agents there
-            a = model.agents(k); pos = model.targets(p.AgentStarts(k)).position;
-            a.initialPosition = pos(:)'; a.initialTargetIdx = p.AgentStarts(k);
-            a.current_target_idx = p.AgentStarts(k); a.state.pos = pos(:)';
+    req = [];   % explicit start targets (a vector, or its text form from runSweep) move the layout's agents
+    if isnumeric(p.AgentStarts) || ~ismember(string(p.AgentStarts), ["auto", "layout"])
+        req = parseStarts(p.AgentStarts, stored);
+    end
+    if ~isempty(req)
+        assert(numel(req) == numel(model.agents), 'runTrial:AgentStarts', ...
+            'AgentSettings "layout": AgentStarts needs one target per agent of %s (%d), got %d', ...
+            char(p.Layout), numel(model.agents), numel(req));
+        assert(all(req >= 1 & req <= numel(model.targets) & req == round(req)), 'runTrial:AgentStarts', ...
+            'AgentStarts %s must be target indices 1..%d of %s', mat2str(req), numel(model.targets), char(p.Layout));
+        for k = 1:numel(model.agents)
+            a = model.agents(k); pos = model.targets(req(k)).position;
+            a.initialPosition = pos(:)'; a.initialTargetIdx = req(k);
+            a.current_target_idx = req(k); a.state.pos = pos(:)';
         end
-        stored = p.AgentStarts(:)';
+        stored = req(:)';
     end
     starts = stored;
 end
@@ -131,8 +146,15 @@ if isfield(p, 'BatteryModel') && string(p.BatteryModel) == "1RC"
         for q = ["P0", "alphaVel", "gammaAcc", "cpuMove", "cpuIdle", "commActive", "commStandby", "eta", "c2", "R0", "Voc"]
             nb.(q) = old.(q);
         end
-        nb.sensorSeed = a.index; nb.reset();
+        nb.reset();
         a.battery = nb;
+    end
+end
+% The current sensors' noise of Battery1RC batteries: a stream per agent and per Seed
+for a = model.agents
+    if isa(a.battery, 'Battery1RC')
+        if isprop(a, 'sensorSeedBase'), a.sensorSeedBase = 1000 * max(p.Seed, 0); end
+        a.battery.sensorSeed = 1000 * max(p.Seed, 0) + a.index; a.battery.reset();
     end
 end
 for i = 1:numel(f)
@@ -245,7 +267,7 @@ if ~isempty(model.agents) && all(arrayfun(@(a) isprop(a, 'Je'), model.agents))
     out.Je = sum([model.agents.Je]);
     out.vmax = max([model.agents.peakSpeed]);
     out.umax = max([model.agents.peakAccel]);
-    if isprop(pol, 'energyWeight'), out.JT = pol.energyWeight * out.Je + finalJ; end
+    if class(pol) == "EDRHCPolicy", out.JT = pol.energyWeight * out.Je + finalJ; end   % ED-RHC/ED-ORHC's own weight
 end
 if logOn
     for name = ["pos", "vel", "acc", "ori", "soc", "energy", "Je", "R", "visits"]

@@ -240,7 +240,7 @@ classdef PhysicalAgent < Agent
             seg = vecnorm(diff(pts, 1, 1), 2, 2);
             keep = [true; seg > 1e-9];                              % drop repeated points
             pts = pts(keep, :);
-            if size(pts, 1) < 2, pts = [pts; pts + [eps 0]]; end   % already there
+            if size(pts, 1) < 2, pts = [pts; pts + [1e-6 0]]; end  % already there (eps would vanish at |p| > 1)
             seg = vecnorm(diff(pts, 1, 1), 2, 2);
             n = size(pts, 1);
             G.pts = pts;
@@ -288,7 +288,7 @@ classdef PhysicalAgent < Agent
             ub = obj.planMargin * obj.state.maxAccel;
             y = G.s(end);
             corners = find(G.h > 0);
-            l = unique([linspace(0, y, min(600, max(2, ceil(y / 0.25) + 1)))'; ...
+            l = unique([linspace(0, y, min(600, max(3, ceil(y / 0.25) + 1)))'; ...   % at least a midpoint: two samples at rest give rho = y/eps
                 G.s(corners) - G.h(corners); G.s(corners) + G.h(corners)]);
             l = l(l >= 0 & l <= y);
             l = l([true; diff(l) > 1e-9]);

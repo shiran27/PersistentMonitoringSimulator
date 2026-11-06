@@ -292,7 +292,9 @@ switch L.Study(id)
         p.Policy_alphaH = f * R(1).stats.muEMean / R(1).stats.planMean;
     case "S8"   % the largest error per transit, and of the SOC estimate, over the runs without margins
         tr = [R.transits];
-        p.Policy_transitMargins = [max(max([tr.actual] - [tr.planned]), 0), max(max([tr.cellE] - [tr.planE]), 0)];
+        pl = [tr.planned];   % against the policy's planned transit where it set one
+        if isfield(tr, 'plannedByPolicy'), pp = [tr.plannedByPolicy]; pl(~isnan(pp)) = pp(~isnan(pp)); end
+        p.Policy_transitMargins = [max(max([tr.actual] - pl), 0), max(max([tr.cellE] - [tr.planE]), 0)];
         p.Policy_marginEnergy = max([R.socErrMax]) * R(1).capacity;
     case "S9"   % omega = kappa J_R/(N P) of the kappa = 0 run of the same seed
         k = str2double(extractAfter(L.Variant(id), "kappa "));

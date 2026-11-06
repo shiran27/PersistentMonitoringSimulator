@@ -73,7 +73,10 @@ classdef AgentSpec
             if obj.profile ~= "", a.profile = obj.profile; end
             if ~isnan(obj.kp), a.controller.kp = obj.kp; end
             if ~isnan(obj.kd), a.controller.kd = obj.kd; end
-            if ~isnan(obj.batteryWh), a.battery.capacityWh = obj.batteryWh; end
+            if ~isnan(obj.batteryWh)
+                assert(obj.batteryWh > 0, 'AgentSpec:BatteryWh', 'batteryWh must be positive (got %g Wh)', obj.batteryWh);
+                a.battery.capacityWh = obj.batteryWh;
+            end
             if ~isnan(obj.stopWhenEmpty), a.stopWhenEmpty = logical(obj.stopWhenEmpty); end
             % c1 and c3 set gammaAcc and alphaVel only when they change (no round-off otherwise)
             if ~isnan(obj.motorC1) && obj.motorC1 ~= a.battery.c1, a.battery.gammaAcc = obj.motorC1 * a.battery.eta; end
