@@ -295,7 +295,7 @@ add("HistMax", max(hi), '%.1f'); add("HistMin", abs(min(hi)), '%.1f');
 ns = arrayfun(@(s) pc(J("bench", s, "Collab-A-noshare"), J("bench", s, "Collab-A")), ma);
 add("NoShareMaze", ns(3), '%.1f');
 add("NoShareOthersMax", ceil(max(abs(ns([1 2 4 5])))), '%d');
-add("BenchCoLocMax", max(T.CoLocation(T.Study == "bench")), '%.1f');
+add("BenchCoLocMax", max(T.CoLocation(T.Study == "bench")), '%.2f');   % exact: a multiple of dt = 0.02
 % group study
 g = ["JS_2Agent_5T", "JS_3Agent_General"]; gk = ["TwoAFiveT", "General"];
 for k = 1:2
@@ -315,7 +315,7 @@ for k = 1:height(M)
 end
 pk = ["ED", "Alpha", "A", "B"]; mm = ["ED-RHC", "ED-RHC-alpha", "Collab-A", "Collab-B"];
 for q = 1:4, add("MapsPeakLab" + pk(q), row("maps", "ReportLayout", mm(q)).PeakR, '%.0f'); end
-add("MapsCoLocMax", max(T.CoLocation(T.Study == "maps")), '%.1f');
+add("MapsCoLocMax", max(T.CoLocation(T.Study == "maps")), '%.2f');   % exact: a multiple of dt = 0.02
 % maps without the terminal correction: change of Collab (B) when hhat = 0, and against ED-RHC
 for k = 1:height(M)
     nt = J("maps", M.Layout(k), "Collab-B-noterminal");
