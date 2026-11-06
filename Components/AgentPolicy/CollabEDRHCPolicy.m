@@ -52,6 +52,7 @@ classdef CollabEDRHCPolicy < Policy
         missionEnd = Inf     % mission end T [s] (truncates tf and hhat)
         gridSize = 15        % grid points per variable (one agent) before fmincon
         groupSamples = 150   % random samples per assignment for a group of 2 or more agents
+        sampleSeed = 1       % seed of the samples' own stream (mt19937ar)
         retryTime = 1        % wait before a leader with no feasible plan tries again [s]
         traceDecisions = false
         decisions = zeros(0, 13)  % [t, leader, event, target i, group size, next j, d_a, tf,
@@ -541,14 +542,14 @@ classdef CollabEDRHCPolicy < Policy
                 % deterministic samples (P1: identical solutions for identical data) from an own
                 % stream: the same on parallel workers, whose default generator differs, and the
                 % caller's rng state is left as is
-                s = RandStream('mt19937ar', 'Seed', 1);
+                s = RandStream('mt19937ar', 'Seed', obj.sampleSeed);
                 n = obj.groupSamples;
                 a = rand(s, n, 1) * span; b = rand(s, n, 1) .* (span - a);
                 if tmpl.fixLeader, a(:) = 0; end
                 F = rand(s, n, nS - 1);
                 F(1:min(n, 10), :) = 1;                       % the others stay
                 F(11:min(n, 20), :) = 0;                      % the others leave now
-                F(21:min(n, 30), :) = a(21:min(n, 30)) ./ max(a(21:min(n, 30)) + b(21:min(n, 30)) + r1, obj.tol);
+                F(21:min(n, 30), :) = repmat(a(21:min(n, 30)) ./ max(a(21:min(n, 30)) + b(21:min(n, 30)) + r1, obj.tol), 1, nS - 1);
                 X = [a, b, F];                                % ... or leave with the leader
             end
             J = obj.evaluate(D, tmpl, obj.toPlan(X, tmpl, D.t));

@@ -10,6 +10,8 @@ function out = collabExperiments(mode, opts)
 %   maps   the simulator's maps (collabMaps: Lab floor, Office floor, City patrol, Harbor patrol,
 %          Campus) with their walls and per-target growth rates, with the 4 methods and Collab (B)
 %          without the terminal correction
+%   seeds  the group study's Collab (A) and (B) with seeds 2-5 of the group candidates' stream
+%          (seed 1 is the group study)
 % Run from CollabResults.mlx (Experiments/collab/collabResultsSource.m), or directly:
 %   collabExperiments("list")      the runs (one row each)
 %   collabExperiments("run")       runs every run not saved yet (in parallel when the Parallel
@@ -85,10 +87,12 @@ sizes = 2:6;
 mainMethods = ["ED-RHC", "ED-RHC-alpha", "Collab-A", "Collab-B"];
 ablations = ["Collab-B-noterminal", "Collab-B-history", "Collab-A-noshare"];
 maps = collabMaps();
+seeds = 2:5;
 T = 500;
 if opts.Quick
     presets = ["JS_1Agent_3T", "JS_2Agent_5T"]; groups = groups(1, :); sizes = 2:3; ablations = strings(1, 0); T = 60;
     maps = maps(maps.Layout == "HarborPatrol", :);
+    seeds = 2;
 end
 rows = {};
 for k = 1:numel(presets)
@@ -122,6 +126,16 @@ for k = 1:height(maps)
     p = params(maps.Layout(k) + ".mat", methods("Collab-B-noterminal").params, T, opts);
     p.TargetRates = "layout";
     rows(end+1, :) = {"maps", maps.Layout(k), "Collab-B-noterminal", p}; %#ok<AGROW>
+end
+% the group study with other seeds of the group candidates' stream (CollabEDRHCPolicy.sampleSeed)
+for g = 1:size(groups, 1)
+    for m = methods(["Collab-A", "Collab-B"])
+        for sd = seeds
+            p = params(fullfile("Collab", groups(g, 2) + ".mat"), m.params, T, opts);
+            p.TargetRates = "layout"; p.Policy_sampleSeed = sd;
+            rows(end+1, :) = {"seeds", groups(g, 1) + "/seed" + sd, m.label, p}; %#ok<AGROW>
+        end
+    end
 end
 L = cell2table(rows, 'VariableNames', {'Study', 'Scenario', 'Method', 'Params'});
 end
@@ -223,9 +237,11 @@ for k = 1:numel(presets)
         if ~isempty(r), v(m) = r.J(1); end
     end
     if all(isnan(v)), continue; end
-    [~, b] = min(v(1:nBold));
+    vr = round(v, 1);   % bold every value that ties with the lowest one as printed
     cells = arrayfun(@(x) sprintf('%.1f', x), v, 'UniformOutput', false);
-    cells{b} = ['\textbf{' cells{b} '}'];
+    for b = find(vr(1:nBold) == min(vr(1:nBold)))
+        cells{b} = ['\textbf{' cells{b} '}'];
+    end
     fprintf(fid, '%s & %s \\\\ \\hline\n', names(k), strjoin(cells, ' & '));
 end
 fprintf(fid, '\\end{tabular}\n');
@@ -305,6 +321,19 @@ for k = 1:height(M)
     if isempty(nt), continue; end
     add("MapsNoTermVsB" + mk(k), abs(pc(nt, J("maps", M.Layout(k), "Collab-B"))), '%.1f');
     add("MapsNoTermVsED" + mk(k), abs(pc(nt, J("maps", M.Layout(k), "ED-RHC"))), '%.1f');
+end
+% group study over seeds 1-5 of the group candidates' stream (seed 1 is Tab. IV): range of J_T
+% of Collab (A) and (B), and the smallest ratios of ED-RHC and ED-RHC-alpha to Collab (A)
+for k = 1:2
+    for mm = ["Collab-A", "Collab-B"]
+        Js = [J("group", g(k), mm); arrayfun(@(sd) J("seeds", g(k) + "/seed" + sd, mm), 2:5)'];
+        add("SeedMin" + gk(k) + extractAfter(mm, "-"), min(Js), '%.1f');
+        add("SeedMax" + gk(k) + extractAfter(mm, "-"), max(Js), '%.1f');
+        if mm == "Collab-A"
+            add("SeedEDRatio" + gk(k), J("group", g(k), "ED-RHC") / max(Js), '%.1f');
+            add("SeedAlphaRatio" + gk(k), J("group", g(k), "ED-RHC-alpha") / max(Js), '%.1f');
+        end
+    end
 end
 % team size
 S = T(T.Study == "scale", :);

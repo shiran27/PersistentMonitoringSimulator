@@ -4,6 +4,7 @@ function tests = collabPolicyTest
 %     (Th. 2 of the collaboration paper), up to the numerical RHCP solutions
 %   - sharing: on targets that one agent cannot clear (A > B) the agents share them, and the
 %     result is better than ED-RHC, which cannot share
+%   - groups of three or more agents at one target are planned jointly
 %   - bookkeeping: every solve is counted, shifts only happen in coordination mode B
 tests = functiontests(localfunctions);
 end
@@ -28,6 +29,17 @@ p.Policy = "Collab-ED-RHC"; p = rmfield(p, 'Policy_alpha');
 co = runTrial(p);
 verifyGreaterThan(tc, co.coLocationTime, 0);
 verifyLessThan(tc, co.finalJ, ed.finalJ);
+end
+
+function testGroupOfThree(tc)
+% three and four agents residing at one target plan jointly (sampled candidates, nS - 1 >= 2)
+for starts = {[1 1 1], [1 1 1 1]}
+    p = base("JS_3Agent_General", 10);
+    p.AgentStarts = starts{1}; p.Policy = "Collab-ED-RHC";
+    o = runTrial(p);
+    verifyGreaterThan(tc, o.policy.stats.solves, 0);
+    verifyTrue(tc, isfinite(o.finalJ));
+end
 end
 
 function testStats(tc)
